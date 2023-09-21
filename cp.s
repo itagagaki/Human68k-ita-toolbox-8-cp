@@ -86,10 +86,16 @@
 * Itagaki Fumihiko 08-May-94  -Vn でもターゲットのボリュームラベルが削除されてしまうバグを修正.
 * Itagaki Fumihiko 08-May-94  -Bオプション, -Cオプションによる切り詰めの方法を変更した.
 * 2.6
+* Itagaki Fumihiko 01-Oct-94  オープンしていないファイルをクローズする場合があるバグ（実害はほ
+*                             とんど発生しない）を修正.
+* Itagaki Fumihiko 02-Oct-94  2044年以降のファイルを-uオプションつきでコピーまたは-pオプション
+*                             つきで上書きコピーできないバグを修正.
+* Itagaki Fumihiko 02-Oct-94  -T オプションを追加.
+* 2.7
 *
-* Usage: cp [ -IRSVadfinpsuv ] [ -m mode ] [ -- ] <ファイル1> <ファイル2>
-*        cp -Rr [ -BCDILUSVadefinpsuv ] [ -m mode ] [ -- ] <ディレクトリ1> <ディレクトリ2>
-*        cp [ -BCDILPRSUVadefinprsuv ] [ -m mode ] [ -- ] <ファイル> ... <ディレクトリ>
+* Usage: cp [ -IRSTVadfinpsuv ] [ -m mode ] [ -- ] <ファイル1> <ファイル2>
+*        cp -Rr [ -BCDILUSTVadefinpsuv ] [ -m mode ] [ -- ] <ディレクトリ1> <ディレクトリ2>
+*        cp [ -BCDILPRSTUVadefinprsuv ] [ -m mode ] [ -- ] <ファイル> ... <ディレクトリ>
 
 .include doscall.h
 .include error.h
@@ -146,6 +152,7 @@ FLAG_D		equ	17
 FLAG_L		equ	18
 FLAG_U		equ	19
 FLAG_S		equ	20
+FLAG_T		equ	21
 
 LNDRV_O_CREATE		equ	4*2
 LNDRV_O_OPEN		equ	4*3
@@ -330,6 +337,10 @@ decode_opt_loop2:
 
 		moveq	#FLAG_S,d1
 		cmp.b	#'S',d0
+		beq	set_option
+
+		moveq	#FLAG_T,d1
+		cmp.b	#'T',d0
 		beq	set_option
 
 		cmp.b	#'m',d0
@@ -1176,7 +1187,6 @@ copy_file_or_directory_1:
 		btst	#MODEBIT_SYS,d0
 		beq	copy_file_or_directory_S_ok
 
-		moveq	#-1,d2
 		lea	msg_is_systemfile(pc),a2
 		bra	copy_file_error
 
@@ -1256,7 +1266,7 @@ copy_file:
 
 		move.w	(a2),d0
 		cmp.w	d3,d0
-		bne	copy_file_done
+		bne	copy_file_return_1
 copy_file_x_ok:
 	*
 	*  -s のチェック
@@ -1345,7 +1355,7 @@ copy_file_destination_error:
 		movea.l	a1,a0
 copy_file_error:
 		bsr	werror_myname_word_colon_msg
-		bra	copy_file_done
+		bra	copy_file_return_1
 
 check_destination:
 		tst.l	realdest_mode
@@ -1365,7 +1375,7 @@ check_destination:
 
 		bsr	verbose
 		btst	#FLAG_n,d5
-		bne	copy_file_done
+		bne	copy_file_return_0
 
 		*  destinationを書き込みモードで再オープンする．
 		move.w	d2,d0				*  destinationを
@@ -1386,9 +1396,8 @@ copy_file_check_identical:
 
 		*  まずタイムスタンプを調べる．
 		*  これが同一でなければエントリも同一でない筈である．
-		bsr	compare_timestamp
-		bmi	copy_file_perror
-		beq	copy_file_u_ok
+		bsr	get_both_timestamp
+		bne	copy_file_u_ok
 
 		cmp.l	d0,d3
 		bne	copy_file_check_u
@@ -1421,7 +1430,7 @@ copy_file_check_identical:
 		lea	msg_are_identical(pc),a0
 		bsr	werror
 		bsr	werror_newline_and_set_error
-		bra	copy_file_done
+		bra	copy_file_return_0
 
 copy_file_check_u:
 	*
@@ -1430,20 +1439,19 @@ copy_file_check_u:
 		btst	#FLAG_u,d5
 		beq	copy_file_u_ok
 
-		bsr	compare_timestamp
-		bmi	copy_file_perror
-		beq	copy_file_u_ok
+		bsr	get_both_timestamp
+		bne	copy_file_u_ok
 
 		cmp.l	d0,d3
-		bhs	copy_file_done
+		bhs	copy_file_return_0
 copy_file_u_ok:
-		moveq	#0,d0
-		bsr	confirm_overwrite
-		bne	copy_file_done
-
 		move.w	d2,d0
 		bsr	fclose
 		moveq	#-1,d2
+		moveq	#0,d0
+		bsr	confirm_overwrite
+		bne	copy_file_return_1
+
 		btst	#FLAG_f,d5
 		bne	remove_and_create_dest_with_source_mode
 
@@ -1453,12 +1461,12 @@ copy_file_u_ok:
 		btst	#FLAG_p,d5
 		bne	create_dest_with_source_mode_ok
 
-		and.w	#MODEVAL_EXE|MODEVAL_SYS|MODEVAL_HID|MODEVAL_RDO,d3
+		and.l	#MODEVAL_EXE|MODEVAL_SYS|MODEVAL_HID|MODEVAL_RDO,d3
 		move.l	source_mode,d0
 		bmi	re_create_dest_with_arc
 
-		and.w	#MODEVAL_LNK|MODEVAL_DIR|MODEVAL_VOL|MODEVAL_ARC,d0
-		or.w	d0,d3
+		and.l	#MODEVAL_LNK|MODEVAL_DIR|MODEVAL_VOL|MODEVAL_ARC,d0
+		or.l	d0,d3
 		bra	create_dest_1
 
 re_create_dest_with_arc:
@@ -1469,53 +1477,24 @@ remove_and_create_dest_with_source_mode:
 		btst	#FLAG_n,d5
 		bne	create_dest_4
 
-.if 0
-		*  GNU fileutils 3.3 の cp では，destinationがシンボリック・
-		*  リンクであろうと何であろうとdestinationそのものが削除される
-		exg	a0,a1
-		bsr	unlink
-		exg	a0,a1
-		*  これはおかしい
-.else
-.if 0
-		*  real destination を削除する
-		move.l	a0,-(a7)
-		lea	realdest_pathname(pc),a0
-		bsr	unlink
-		movea.l	(a7)+,a0
-		*  これが正しいと思う
-.else
-		*  削除する代わりに属性を変更して削除したふりをする．
-		move.l	realdest_mode,d0
-		and.w	#MODEVAL_LNK|MODEVAL_VOL|MODEVAL_SYS|MODEVAL_RDO,d0
-		beq	remove_dest_ok
-
-		move.l	a0,-(a7)
-		lea	realdest_pathname(pc),a0
-		moveq	#MODEVAL_ARC,d0
-		bsr	lchmod
-		movea.l	(a7)+,a0
-remove_dest_ok:
-		*  この方が速い．
-.endif
+		bsr	remove_dest
 		move.l	#-1,realdest_mode
-.endif
 		bra	create_dest_with_source_mode_ok
 
 create_dest_with_source_mode:
 		moveq	#0,d0
 		bsr	confirm_copy
-		bne	copy_file_done
+		bne	copy_file_return_1
 create_dest_with_source_mode_ok:
 		move.l	source_mode,d3
 		bpl	create_dest_1
 
-		move.w	#MODEVAL_ARC,d3
+		move.l	#MODEVAL_ARC,d3
 create_dest_1:
 		btst	#FLAG_s,d5
 		beq	create_dest_2
 
-		move.w	#(MODEVAL_LNK|MODEVAL_ARC),d3
+		move.l	#(MODEVAL_LNK|MODEVAL_ARC),d3
 create_dest_2:
 		move.l	realdest_mode,d0
 		bmi	create_dest_3
@@ -1584,10 +1563,13 @@ check_volumelabel_ok:
 create_dest_4:
 		bsr	verbose
 		btst	#FLAG_n,d5
-		bne	copy_file_done
+		bne	copy_file_return_1
 
-		move.w	d3,d0
+		move.l	d3,d0
 		bsr	newmode
+		move.l	d0,realdest_mode
+create_dest_5:
+		move.l	realdest_mode,d0
 		move.w	d0,-(a7)
 		move.l	a1,-(a7)			*  destinationを
 		DOS	_CREATE				*  作成する
@@ -1647,20 +1629,59 @@ copy_file_contents_done:
 	*  -p が指定されていれば、ファイルのタイムスタンプをコピーする
 	*
 		btst	#FLAG_p,d5
-		beq	copy_file_date_done
+		beq	copy_file_done
 
 		bsr	get_source_time
-		beq	copy_file_date_done
+		bne	copy_file_done
 
 		move.l	d0,-(a7)
 		move.w	d2,-(a7)
 		DOS	_FILEDATE
 		addq.l	#6,a7
 			* エラー処理省略 (無視)
-copy_file_date_done:
 copy_file_done:
 		move.l	d2,d0
 		bsr	fclosex
+		btst	#FLAG_T,d5
+		beq	copy_file_return_1
+
+		move.l	realdest_mode,d0
+		bmi	copy_file_return_1
+
+		btst	#MODEBIT_SYS,d0
+		beq	copy_file_return_1
+
+		movem.l	a0-a1,-(a7)
+		lea	realdest_pathname(pc),a0
+		lea	dest_fatchkbuf(pc),a1
+		bsr	fatchk
+		movem.l	(a7)+,a0-a1
+		bmi	copy_file_return_1
+
+		cmp.l	#14,d0
+		beq	copy_file_return_1
+
+		move.l	a0,-(a7)
+		movea.l	a1,a0
+		bsr	werror_myname_and_msg
+		lea	msg_not_straight(pc),a0
+		bsr	werror
+		movea.l	(a7)+,a0
+		bsr	confirm_x
+		bne	copy_file_return_1
+
+		clr.w	-(a7)
+		clr.l	-(a7)
+		move.w	d1,-(a7)
+		DOS	_SEEK
+		addq.l	#8,a7
+		bsr	remove_dest
+		bra	create_dest_5
+
+copy_file_return_0:
+		move.l	d2,d0
+		bsr	fclosex
+copy_file_return_1:
 		move.l	d1,d0
 		bra	fclosex
 
@@ -1671,10 +1692,10 @@ copy_file_perror_1:
 		movea.l	a1,a0
 copy_file_perror:
 		cmp.l	#-1,d0
-		beq	copy_file_done
+		beq	copy_file_return_0
 
 		bsr	perror
-		bra	copy_file_done
+		bra	copy_file_return_0
 ****************
 *
 *  ディレクトリをコピーする
@@ -1952,7 +1973,7 @@ copy_directory_attributes:
 	*
 		moveq	#EDIRVOL,d1
 		bsr	get_source_time
-		beq	copy_directory_mode
+		bne	copy_directory_mode
 
 		move.l	d0,d3
 		lea	realdest_pathname(pc),a0
@@ -2033,7 +2054,40 @@ copy_directory_done:
 		unlk	a6
 		rts
 *****************************************************************
-* compare_timestamp - sourceとdestinationのタイムスタンプを得る
+remove_dest:
+.if 0
+		*  GNU fileutils 3.3 の cp では，destinationがシンボリック・
+		*  リンクであろうと何であろうとdestinationそのものが削除される
+		exg	a0,a1
+		bsr	unlink
+		exg	a0,a1
+		*  これはおかしい
+.else
+.if 0
+		*  real destination を削除する
+		move.l	a0,-(a7)
+		lea	realdest_pathname(pc),a0
+		bsr	unlink
+		movea.l	(a7)+,a0
+		*  これが正しいと思う
+.else
+		*  削除する代わりに属性を変更して削除したふりをする．
+		move.l	realdest_mode,d0
+		and.w	#MODEVAL_LNK|MODEVAL_VOL|MODEVAL_SYS|MODEVAL_RDO,d0
+		beq	remove_dest_ok
+
+		move.l	a0,-(a7)
+		lea	realdest_pathname(pc),a0
+		moveq	#MODEVAL_ARC,d0
+		bsr	lchmod
+		movea.l	(a7)+,a0
+remove_dest_ok:
+		*  この方が速い．
+.endif
+.endif
+		rts
+*****************************************************************
+* get_both_timestamp - sourceとdestinationのタイムスタンプを得る
 *
 * CALL
 *      D1.L                sourceをopenした結果
@@ -2046,84 +2100,42 @@ copy_directory_done:
 *                          失敗したならDOSエラー・コード
 *
 *      source_time         sourceのタイムスタンプ
+*                          -1なら, ここでタイムスタンプを取得して
+*                          帰る．そうでなければ，この値がそのまま
+*                          戻り値となる．
+*
 *      realdest_time       destinationのタイムスタンプ
-*
-*                          不明ならば -1．その場合はここでタイム
-*                          スタンプを取得して帰る．
-*                          そうでなければ，この値がそのまま戻り値
-*                          になる．
-*
-*                          不明ならば -1．その場合はここでタイム
-*                          スタンプを取得して帰る．
-*                          そうでなければ，この値がそのまま戻り値
-*                          になる．
+*                          -1なら, ここでタイムスタンプを取得して
+*                          帰る．そうでなければ，この値がそのまま
+*                          戻り値となる．
 *
 *      source_pathname     sourceの実体のパス名
 *      realdest_pathname   destinationの実体のパス名
 *
 * RETURN
-*      source_time    sourceのタイムスタンプ
-*                     取得できなかった場合は 0
+*      D3.L           real_destのタイムスタンプ
+*      source_time    CCR==NEなら無効
 *
-*      D0.L           source_time の値
-*                     エラーの場合はDOSエラー・コード
+*      D0.L           sourceのタイムスタンプ
+*      source_time    CCR==NEなら無効
 *
-*      realdest_time  destinationのタイムスタンプ
-*                     取得できなかった場合は 0
-*
-*      D3.L           realdest_time の値
-*
-*      CCR            エラーなら MI
-*                     sourceとdestinationのどちらかのタイムスタン
-*                     プの取得に失敗したなら EQ
-*
-* NOTE
-*      CALL の D1.L が -1 の場合にのみエラーが起こり得る
+*      CCR            sourceとdestinationの両方の取得に成功したな
+*                     らEQ
 *****************************************************************
-compare_timestamp:
-	*
-	*  destinationのタイムスタンプを得る
-	*
-		move.l	realdest_time,d3
-		cmp.l	#-1,d3
-		bne	compare_timestamp_dest_ok	*  realdest_time は確定している
+get_both_timestamp:
+		move.l	realdest_time,d0
+		movem.l	d1/a0,-(a7)
+		move.l	d2,d1
+		lea	realdest_pathname(pc),a0
+		bsr	get_filedate
+		movem.l	(a7)+,d1/a0
+		bhi	get_both_timestamp_return
 
-		*  realdest_time は確定していない
-		move.w	d2,d0				*  destinationのopenが成功していれば
-		bpl	compare_timestamp_get_dest	*  ファイル・ハンドルからタイムスタンプを取得する
-
-		*  destinationのopenには失敗している
-		*  （ディレクトリかボリュームラベル）
-		*  FILES でタイムスタンプを得る
-		move.w	#MODEVAL_ALL,-(a7)
-		pea	realdest_pathname(pc)
-		pea	filesbuf(pc)
-		DOS	_FILES
-		lea	10(a7),a7
-		tst.l	d0
-		bmi	compare_timestamp_dest_fail
-
-		move.l	filesbuf+ST_TIME(pc),d0
-		swap	d0
-		bra	compare_timestamp_set_dest
-
-compare_timestamp_dest_fail:
-		moveq	#0,d0
-		bra	compare_timestamp_set_dest
-
-compare_timestamp_get_dest:
-		bsr	get_filedate			*  ファイル・ハンドルからタイムスタンプを取得する
-compare_timestamp_set_dest:
 		move.l	d0,realdest_time
 		move.l	d0,d3
-compare_timestamp_dest_ok:
-		tst.l	d3
-		beq	compare_timestamp_return	*  CCR : EQ
 	*
 	*  sourceのタイムスタンプを得る
 	*
-*bsr	get_source_time
-*rts
 *****************************************************************
 * get_source_time - source のタイムスタンプを得る
 *
@@ -2134,66 +2146,76 @@ compare_timestamp_dest_ok:
 *                          未openならば -1
 *
 *      source_time         sourceのタイムスタンプ
-*                          不明ならば -1．その場合はここでタイム
-*                          スタンプを取得して帰る．
-*                          そうでなければ，この値がそのまま戻り値
-*                          になる．
+*                          -1なら, ここでタイムスタンプを取得して
+*                          帰る．そうでなければ，この値がそのまま
+*                          戻り値となる．
 *
 *      source_pathname     sourceの実体のパス名
 *
 * RETURN
-*      source_time    sourceのタイムスタンプ
-*                     取得できなかった場合は 0
+*      D0.L           sourceのタイムスタンプ
+*      source_time    CCR==NEなら無効
 *
-*      D0.L           source_time の値
-*                     エラーの場合はDOSエラー・コード
-*
-*      CCR            エラーなら MI
-*                     タイムスタンプが取得できなければ EQ
-*
-* NOTE
-*      CALL の D1.L が -1 の場合にのみエラーが起こり得る
+*      CCR            取得に成功したならEQ
 *****************************************************************
 get_source_time:
 		move.l	source_time,d0
-		cmp.l	#-1,d0
-		bne	get_source_time_2		*  source_time は確定している
+		move.l	a0,-(a7)
+		lea	source_pathname(pc),a0
+		bsr	get_filedate
+		movea.l	(a7)+,a0
+		bhi	get_both_timestamp_return
 
-		*  source_time は確定していない
-		bsr	do_open_source			*  sourceが未openならばsourceをopenする
-		bmi	get_source_time_return		*  openエラー
+		move.l	d0,source_time
+		cmp.w	d0,d0
+get_both_timestamp_return:
+		rts
+*****************************************************************
+* get_filedate - タイムスタンプを得る
+*
+* CALL
+*      D0.L      タイムスタンプ
+*                -1なら, ここでタイムスタンプを取得して帰る
+*                そうでなければ，この値がそのまま戻り値となる
+*
+*      D1.L      ファイル・ハンドル
+*                負ならばオープンしていない
+*
+*      A0        実体のパス名
+*
+* RETURN
+*      D0.L      タイムスタンプ
+*                上位ワードが$ffffならDOSエラー・コード
+*
+*      CCR       cmp.l #$fffeffff,d0
+*****************************************************************
+get_filedate:
+		cmp.l	#-1,d0
+		bne	get_filedate_done
 
 		tst.l	d1
-		bmi	get_source_time_3		*  sourceはopenできない..FILES で得る
+		bpl	get_filedate_1
 
-		move.w	d1,d0				*  sourceのファイル・ハンドルから
-		bsr	get_filedate			*  タイムスタンプを得る
-get_source_time_1:
-		move.l	d0,source_time
-get_source_time_2:
-		tst.l	d0
-get_source_time_return:
-compare_timestamp_return:
-		rts
-
-get_source_time_3:
-		*  sourceはディレクトリかボリューム・ラベル
-		*  FILES でタイムスタンプを得る
 		move.w	#MODEVAL_ALL,-(a7)
-		pea	source_pathname(pc)
+		move.l	a0,-(a7)
 		pea	filesbuf(pc)
 		DOS	_FILES
 		lea	10(a7),a7
 		tst.l	d0
-		bmi	get_source_time_fail
+		bmi	get_filedate_done
 
 		move.l	filesbuf+ST_TIME(pc),d0
 		swap	d0
-		bra	get_source_time_1
+		bra	get_filedate_done
 
-get_source_time_fail:
-		moveq	#0,d0
-		bra	get_source_time_1
+get_filedate_1:
+		clr.l	-(a7)
+		move.w	d1,-(a7)
+		DOS	_FILEDATE
+		addq.l	#6,a7
+get_filedate_done:
+		cmp.l	#$fffeffff,d0
+		rts
 *****************************************************************
 confirm_overwrite:
 		movem.l	a0/a2,-(a7)
@@ -2238,6 +2260,9 @@ do_confirm_2:
 		bsr	werror
 		movea.l	a2,a0
 		bsr	werror
+		movem.l	(a7)+,a0/a2
+confirm_x:
+		movem.l	a0/a2,-(a7)
 		lea	getsbuf(pc),a0
 		move.b	#GETSLEN,(a0)
 		move.l	a0,-(a7)
@@ -2551,30 +2576,6 @@ lchmod:
 		tst.l	d0
 		rts
 *****************************************************************
-* get_filedate - ファイル・ハンドルからタイムスタンプを得る
-*
-* CALL
-*      D0.W   ファイル・ハンドル
-*
-* RETURN
-*      D0.L   タイムスタンプ
-*             取得できなければ 0
-*
-*      CCR    TST.L D0
-*****************************************************************
-get_filedate:
-		clr.l	-(a7)
-		move.w	d0,-(a7)
-		DOS	_FILEDATE
-		addq.l	#6,a7
-		cmp.l	#$ffff0000,d0
-		bls	get_filedate_return
-
-		moveq	#0,d0
-get_filedate_return:
-		tst.l	d0
-		rts
-*****************************************************************
 malloc:
 		move.l	d0,-(a7)
 		DOS	_MALLOC
@@ -2723,7 +2724,7 @@ perror_2:
 .data
 
 	dc.b	0
-	dc.b	'## cp 2.6 ##  Copyright(C)1992-94 by Itagaki Fumihiko',0
+	dc.b	'## cp 2.7 ##  Copyright(C)1992-94 by Itagaki Fumihiko',0
 
 .even
 perror_table:
@@ -2801,16 +2802,17 @@ msg_cannot_overwrite_dir:	dc.b	'ディレクトリには書き込めません',0
 msg_cannot_overwrite_symlink:	dc.b	'シンボリック・リンクには書き込めません',0
 msg_cannot_create_link:		dc.b	'シンボリック・リンクを作成できません; ファイルが存在しています',0
 msg_volume_label_exists:	dc.b	'ボリューム・ラベルをコピーしません; ボリューム・ラベルが存在しています',0
+msg_not_straight:		dc.b	': FATが不連続です. やりなおしますか？ ',0
 msg_usage:			dc.b	CR,LF,CR,LF
-	dc.b	'使用法:  cp [-ISVadfinpsuv] [-m <属性変更式>] [--] f1 f2',CR,LF
+	dc.b	'使用法:  cp [-ISTVadfinpsuv] [-m <属性変更式>] [--] f1 f2',CR,LF
 	dc.b	'              f1: コピーするファイルまたは入力デバイス',CR,LF
 	dc.b	'              f2: 複製ファイル名または出力デバイス',CR,LF,CR,LF
 
-	dc.b	'         cp {-R|-r} [-BCDILUSVadefinpsuvx] [-m <属性変更式>] [--] d1 d2',CR,LF
+	dc.b	'         cp {-R|-r} [-BCDILUSTVadefinpsuvx] [-m <属性変更式>] [--] d1 d2',CR,LF
 	dc.b	'              d1: コピーするディレクトリ',CR,LF
 	dc.b	'              d2: 複製ディレクトリ名（新規）',CR,LF,CR,LF
 
-	dc.b	'         cp [-BCDILPRSUVadefinprsuvx] [-m <属性変更式>] [--] any ... targetdir',CR,LF
+	dc.b	'         cp [-BCDILPRSTUVadefinprsuvx] [-m <属性変更式>] [--] any ... targetdir',CR,LF
 	dc.b	'              any: コピーするファイルやディレクトリ',CR,LF
 	dc.b	'              targetdir: コピー先ディレクトリ',CR,LF,CR,LF
 

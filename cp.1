@@ -9,8 +9,8 @@ CP(1)          Human68k ITA TOOLBOX User's Manual           CP(1)
      cp - ファイルやディレクトリをコピーする
 
 形式
-     cp [ -IRSVadefinprsuvx ] [ -m mode ] [ -- ] source dest
-     cp [ -BCDILPRSUVadefinprsuvx ] [ -m mode ] [ -- ] source ...
+     cp [ -IRSTVadefinprsuvx ] [ -m mode ] [ -- ] source dest
+     cp [ -BCDILPRSTUVadefinprsuvx ] [ -m mode ] [ -- ] source ...
      targetdir
 
 解説
@@ -186,6 +186,9 @@ CP(1)          Human68k ITA TOOLBOX User's Manual           CP(1)
 
      -S        システム・ファイルをコピーしません．
 
+     -T        作成したシステム・ファイルのFATが不連続となった場
+               合，コピーをやりなおすかどうかを問い合わせます．
+
      -V        ボリューム・ラベルもコピーします．
 
      -B        ファイルやディレクトリを元の名前でコピーする場合に，
@@ -238,14 +241,14 @@ CP(1)          Human68k ITA TOOLBOX User's Manual           CP(1)
      ディレクトリの再帰の回数は64回に制限されています．
 
 バージョン
-     2.6
+     2.7
 
 制作・著作
      Copyright(C)1992-94 by 板垣 史彦 (Itagaki Fumihiko)
 
 
 
-2.6                 Last change:  8 May 1994     Itagaki Fumihiko
+2.7                 Last change:  2 Oct 1994     Itagaki Fumihiko
 
 
 
