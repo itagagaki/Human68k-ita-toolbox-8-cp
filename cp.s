@@ -47,15 +47,19 @@
 * Itagaki Fumihiko 03-Nov-93  -m-w+x （-m と mode をくっつけて指定）を許す
 * Itagaki Fumihiko 03-Nov-93  -m 644 （8進数値表現）を許す
 * Itagaki Fumihiko 03-Nov-93  -g オプションの追加
-* 1.8
+* 1.8(非公開)
 * Itagaki Fumihiko 04-Nov-93  -g オプションを廃止．その代わり，コピー元ファイルとコピー先ファイ
 *                             ルが同一でないことが理屈の上で明確である場合に限りチェックしない
 *                             ようにした．
-* 1.9
+* 1.9(非公開)
+* Itagaki Fumihiko 11-Nov-93  ディレクトリをコピーするとき，ディレクトリ内のシンボリック・リン
+*                             クが正しく処理されないバグ（v1.9でのエンバグ）を修正
+* Itagaki Fumihiko 13-Nov-93  -CDLSU オプションの追加
+* 2.0
 *
-* Usage: cp [ -IRVadfinpsuv ] [ -m mode ] [ - ] <ファイル1> <ファイル2>
-*        cp -Rr [ -IVadefinpsuv ] [ -m mode ] [ - ] <ディレクトリ1> <ディレクトリ2>
-*        cp [ -IPRVadefinprsuv ] [ -m mode ] [ - ] <ファイル> ... <ディレクトリ>
+* Usage: cp [ -IRSVadfinpsuv ] [ -m mode ] [ - ] <ファイル1> <ファイル2>
+*        cp -Rr [ -VDILUSVadefinpsuv ] [ -m mode ] [ - ] <ディレクトリ1> <ディレクトリ2>
+*        cp [ -CDILPRSUVadefinprsuv ] [ -m mode ] [ - ] <ファイル> ... <ディレクトリ>
 
 .include doscall.h
 .include error.h
@@ -66,13 +70,18 @@
 .xref DecodeHUPAIR
 .xref getlnenv
 .xref issjis
+.xref islower
+.xref toupper
 .xref strlen
 .xref strcpy
+.xref stpcpy
 .xref strfor1
 .xref strmove
 .xref memmovi
 .xref headtail
 .xref cat_pathname
+.xref skip_root
+.xref find_slashes
 .xref strip_excessive_slashes
 
 REQUIRED_OSVER	equ	$200			*  2.00以降
@@ -99,6 +108,11 @@ FLAG_v		equ	10
 FLAG_x		equ	11
 FLAG_path	equ	12
 FLAG_V		equ	13
+FLAG_C		equ	14
+FLAG_D		equ	15
+FLAG_L		equ	16
+FLAG_U		equ	17
+FLAG_S		equ	18
 
 LNDRV_O_CREATE		equ	4*2
 LNDRV_O_OPEN		equ	4*3
@@ -258,6 +272,26 @@ decode_opt_loop2:
 
 		moveq	#FLAG_V,d1
 		cmp.b	#'V',d0
+		beq	set_option
+
+		moveq	#FLAG_C,d1
+		cmp.b	#'C',d0
+		beq	set_option
+
+		moveq	#FLAG_D,d1
+		cmp.b	#'D',d0
+		beq	set_option
+
+		moveq	#FLAG_L,d1
+		cmp.b	#'L',d0
+		beq	set_option
+
+		moveq	#FLAG_U,d1
+		cmp.b	#'U',d0
+		beq	set_option
+
+		moveq	#FLAG_S,d1
+		cmp.b	#'S',d0
 		beq	set_option
 
 		cmp.b	#'m',d0
@@ -551,9 +585,251 @@ copy_into_dir_1:
 		link	a6,#destination
 		movem.l	d0-d3/d5/d7/a0-a3,-(a7)
 		move.l	d0,d7
+		move.l	a0,copy_into_dir_sourceP
+		btst	#FLAG_path,d5
+		bne	copy_into_dir_skip_root
+
+		move.l	a1,-(a7)
+		bsr	headtail
+		movea.l	a1,a0
+		movea.l	(a7)+,a1
+		bra	copy_into_dir_2
+
+copy_into_dir_skip_root:
+		bsr	skip_root
+copy_into_dir_2:
+		movea.l	a0,a2
+		*
+		*  ここで，
+		*       source:       A:/s1/s2/s3
+		*                        |     |
+		*                        A0    A0
+		*                        A2    A2
+		*                        (-P)
+		*
+		*       targetdir:    B:/t1/t2/t3
+		*                     |
+		*                     A1
+	*
+	*  -L オプションが指定されているとき，A0以降に小文字が含まれていないかどうか
+	*  チェックする
+	*
+		btst	#FLAG_L,d5
+		beq	check_name_case_ok
+check_name_case:
+		move.b	(a0)+,d0
+		beq	check_name_case_ok
+
+		bsr	islower
+		beq	copy_into_dir_done
+
+		bsr	issjis
+		bne	check_name_case
+
+		tst.b	(a0)+
+		bne	check_name_case
+check_name_case_ok:
+	*
+	*  -C オプションまたは -D オプションが指定されているとき，A0以降の名前が
+	*  MS-DOS に適合するかどうかチェックする
+	*
+		btst	#FLAG_C,d5
+		bne	check_name_form
+
+		btst	#FLAG_D,d5
+		beq	check_name_form_ok
+check_name_form:
+		movea.l	a2,a3
+check_name_form_loop:
+		movea.l	a3,a0
+		bsr	find_slashes
+		exg	a0,a3
+		move.b	d0,d3
+		clr.b	(a3)
+		bsr	isrel
+		bne	check_name_form_next
+
+		bsr	find_dot
+		tst.l	d0
+		beq	copy_into_dir_done		*  primaryの長さが 0 .. BAD
+
+		btst	#FLAG_D,d5
+		beq	check_name_form_primary_ok
+
+		cmp.l	#8,d0
+		bhi	copy_into_dir_done
+check_name_form_primary_ok:
+		tst.b	(a0)+
+		beq	check_name_form_next
+
+		bsr	find_dot
+		tst.b	(a0)
+		bne	copy_into_dir_done		*  . が複数ある .. BAD
+
+		btst	#FLAG_D,d5
+		beq	check_name_form_next
+
+		tst.l	d0
+		beq	copy_into_dir_done
+
+		cmp.l	#3,d0
+		bhi	copy_into_dir_done
+check_name_form_next:
+		move.b	d3,(a3)+
+		bne	check_name_form_loop
+check_name_form_ok:
+	*
+	*  destination name を作る
+	*
+		lea	destination(a6),a0
+		move.l	#MAXPATH,d2
+		*
+		*  ここで，
+		*       source:       A:/s1/s2/s3
+		*                        |     |
+		*                        A2    A2
+		*                        (-P)
+		*
+		*       targetdir:    B:/t1/t2/t3
+		*                     |
+		*                     A1
+		*
+		*       destination:  ???
+		*                     |
+		*                     A0
+
+		*
+		*  targetdir を destination にコピーする
+		*
+		exg	a0,a1
+		bsr	strlen
+		exg	a0,a1
+		sub.l	d0,d2
+		bcs	copy_into_dir_too_long_path
+
+		bsr	stpcpy
+		exg	a0,a1
+		bsr	skip_root
+		exg	a0,a1
+		beq	copy_into_dir_makedestname_1
+
+		subq.l	#1,d2
+		bcs	copy_into_dir_too_long_path
+
+		move.b	#'/',(a0)+
+copy_into_dir_makedestname_1:
+		move.l	a0,copy_into_dir_destP
+		*
+		*  ここで，
+		*       source:       A:/s1/s2/s3
+		*                        |     |
+		*                        A2    A2
+		*                        (-P)
+		*
+		*       destination:  B:/t1/t2/t3/
+		*                                 |
+		*                                 A0
+		*
+		btst	#FLAG_C,d5
+		bne	copy_into_dir_makedestname
+		*
+		*  A2以降を destination に追加する
+		*
+		exg	a0,a2
+		bsr	strlen
+		exg	a0,a2
+		sub.l	d0,d2
+		bcs	copy_into_dir_too_long_path
+
+		movea.l	a2,a1
+		bsr	strcpy
+		bra	destname_ok
+
+copy_into_dir_makedestname:
+		movea.l	a0,a3
+		*
+		*  ここで，
+		*       source:       A:/s1/s2/s3
+		*                        |     |
+		*                        A2    A2
+		*                        (-P)
+		*
+		*       destination:  B:/t1/t2/t3/
+		*                                 |
+		*                                 A3
+		*
+copy_into_dir_makedestname_loop:
+		movea.l	a2,a0
+		bsr	find_slashes
+		exg	a0,a2
+		move.b	d0,d3
+		clr.b	(a2)
+		movea.l	a0,a1
+		bsr	isrel
+		adda.l	d0,a0
+		bne	makedestname_primary_ok
+
+		bsr	find_dot
+		cmp.l	#8,d0
+		bls	makedestname_primary_ok
+
+		moveq	#8,d0
+makedestname_primary_ok:
+		sub.l	d0,d2
+		bcs	copy_into_dir_too_long_path
+
+		exg	a0,a3
+		bsr	memmovi
+		exg	a0,a3
+		bsr	strlen
+		cmp.l	#1,d0
+		bls	makedestname_next
+
+		cmp.l	#4,d0
+		bls	makedestname_suffix_ok
+
+		moveq	#4,d0
+makedestname_suffix_ok:
+		sub.l	d0,d2
+		bcs	copy_into_dir_too_long_path
+
+		movea.l	a0,a1
+		exg	a0,a3
+		bsr	memmovi
+		exg	a0,a3
+makedestname_next:
+		move.b	d3,(a2)+
+		bne	copy_into_dir_makedestname_loop
+
+		clr.b	(a3)
+destname_ok:
+		*
+		*  -U が指定されていれば大文字に変換する
+		*
+		btst	#FLAG_U,d5
+		beq	copy_into_dir_destname_ok
+
+		movea.l	copy_into_dir_destP,a0
+copy_into_dir_toupper:
+		move.b	(a0),d0
+		beq	copy_into_dir_destname_ok
+
+		bsr	issjis
+		beq	copy_into_dir_toupper_sjis
+
+		bsr	toupper
+		move.b	d0,(a0)+
+		bra	copy_into_dir_toupper
+
+copy_into_dir_toupper_sjis:
+		addq.l	#1,a0
+		tst.b	(a0)+
+		bne	copy_into_dir_toupper
+copy_into_dir_destname_ok:
 	*
 	*  sourceをチェックする
 	*
+		movea.l	copy_into_dir_sourceP,a0
 		move.l	source_mode,d0
 		bmi	copy_into_dir_check_source
 
@@ -563,12 +839,9 @@ copy_into_dir_1:
 		btst	#FLAG_d,d5
 		beq	copy_into_dir_check_source
 copy_into_dir_source_ok:
-		move.l	a1,-(a7)
 		movea.l	a0,a1
 		lea	source_pathname(pc),a0
 		bsr	strcpy
-		movea.l	a1,a0
-		movea.l	(a7)+,a1
 		moveq	#-1,d1
 		bra	copy_into_dir_ok
 
@@ -577,9 +850,9 @@ copy_into_dir_check_source:
 		cmp.l	#-1,d0
 		beq	copy_into_dir_done
 
-		exg	d0,d1				*  D0.L == source_mode, D1.L == handle
-		tst.l	d0				*  mode
-		bpl	copy_into_dir_ok		*  modeがある == ブロック・デバイス上のエントリ
+		move.l	d0,d1				*  D1.L : handle
+		tst.l	source_mode
+		bpl	copy_into_dir_ok		*  ブロック・デバイス上のエントリ
 
 		*  sourceはブロック・デバイス上のエントリではない
 		tst.l	d1				*  handle
@@ -587,7 +860,6 @@ copy_into_dir_check_source:
 
 		*  sourceはブロック・デバイス上のエントリではないがopenされた
 		*  -> キャラクタ・デバイス -> エラー
-		move.l	d1,d0
 		bsr	fclose
 		lea	msg_is_device(pc),a2
 		bsr	werror_myname_word_colon_msg
@@ -599,70 +871,18 @@ copy_into_dir_cannot_open_source:
 		bne	copy_into_dir_perror
 copy_into_dir_ok:
 		btst	#FLAG_path,d5
-		beq	copy_into_dir_3
-
-		movea.l	a0,a2
-		tst.b	(a2)
-		beq	copy_into_dir_path_3
-
-		cmpi.b	#':',1(a2)
-		bne	copy_into_dir_path_1
-
-		addq.l	#2,a2
-copy_into_dir_path_1:
-		cmpi.b	#'/',(a2)
-		beq	copy_into_dir_path_2
-
-		cmpi.b	#'\',(a2)
-		bne	copy_into_dir_path_3
-copy_into_dir_path_2:
-		addq.l	#1,a2
-copy_into_dir_path_3:
-		bra	copy_into_dir_4
-
-copy_into_dir_3:
-		movea.l	a1,a2
-		bsr	headtail
-		exg	a1,a2				*  A2 : tail of source
-copy_into_dir_4:
-		move.l	a0,-(a7)
-		lea	destination(a6),a0
-		bsr	cat_pathname_x
-		movea.l	(a7)+,a1
-		bmi	copy_into_dir_done
-
-		btst	#FLAG_path,d5
 		beq	copy_into_dir_go
-		*
-		*  ここで，
-		*       source:       A:/s1/s2/s3
-		*                     |  |
-		*                     A1 A2
-		*
-		*       targetdir:    B:/t1/t2/t3
-		*
-		*       destination:  B:/t1/t2/t3/s1/s2/s3
-		*                     |           |
-		*                     A0          A3
-		*
+
+		movea.l	copy_into_dir_destP,a1
 make_path_loop:
-		move.b	(a3)+,d0
+		exg	a0,a1
+		bsr	find_slashes
+		exg	a0,a1
 		beq	copy_into_dir_go
 
-		cmp.b	#'/',d0
-		beq	make_path_slash_found
-
-		cmp.b	#'\',d0
-		beq	make_path_slash_found
-
-		bsr	issjis
-		bne	make_path_loop
-
-		move.b	(a3)+,d0
-		bne	make_path_loop
-make_path_slash_found:
 		move.b	d0,d2
-		clr.b	-(a3)
+		clr.b	(a1)
+		lea	destination(a6),a0
 		bsr	is_directory
 		bmi	copy_into_dir_done
 		bne	make_path_next
@@ -693,11 +913,12 @@ make_path_verbose:
 		DOS	_PRINT
 		lea	12(a7),a7
 make_path_next:
-		move.b	d2,(a3)+
+		move.b	d2,(a1)+
 		bra	make_path_loop
 
 copy_into_dir_go:
-		exg	a0,a1
+		movea.l	copy_into_dir_sourceP,a0
+		lea	destination(a6),a1
 		move.l	d7,d2
 		moveq	#0,d7
 		bsr	copy_file_or_directory_1
@@ -706,6 +927,11 @@ copy_into_dir_done:
 		unlk	a6
 copy_file_or_directory_return:
 		rts
+
+copy_into_dir_too_long_path:
+		lea	msg_too_long_pathname(pc),a0
+		bsr	werror_myname_and_msg
+		bra	copy_into_dir_done
 *****************************************************************
 * copy_file_or_directory_0, copy_file_or_directory_1
 *
@@ -747,25 +973,36 @@ copy_file_or_directory_0:
 		move.l	#-1,source_mode
 		move.l	#-1,source_time
 		st	do_check_identical
-		move.l	d2,-(a7)
 		bsr	open_source
-		move.l	(a7)+,d2
 		cmp.l	#-1,d0
 		beq	copy_file_or_directory_return
 
 		move.l	d0,d1				*  D1.L : source のファイル・ハンドル
 copy_file_or_directory_1:
-		cmp.l	#-1,d1
-		bne	copy_file_or_directory_2
+		btst	#FLAG_S,d5
+		beq	copy_file_or_directory_2
 
-		*  source はブロック・デバイス上のエントリであり，
-		*  source_mode と source_time は確定しているが，
-		*  まだ open していない．
 		move.l	source_mode,d0
-		btst	#MODEBIT_DIR,d0
+		bmi	copy_file_or_directory_2
+
+		btst	#MODEBIT_SYS,d0
+		beq	copy_file_or_directory_2
+
+		lea	msg_is_systemfile(pc),a2
+		bra	werror_myname_word_colon_msg
+
+copy_file_or_directory_2:
+		cmp.l	#-1,d1
+		bne	copy_file_or_directory_3
+
+		*  sourceはブロック・デバイス上のエントリであり，
+		*  source_mode と source_time は確定しているが，
+		*  まだopenしていない．
+		move.l	source_mode,d0
+		btst	#MODEBIT_DIR,d0			*  ディレクトリか？
 		bne	copy_file_or_directory_dir
 
-		btst	#MODEBIT_VOL,d0
+		btst	#MODEBIT_VOL,d0			*  ボリュームラベルか？
 		bne	copy_volumelabel
 		bra	copy_file
 
@@ -775,23 +1012,25 @@ copy_file_or_directory_dir:
 		lea	copy_directory_pathbuf(a6),a2
 		bsr	make_dirsearchpath
 copy_directory_0:
-		bmi	copy_directory_done		*  cat_pathname_x エラー
+		bmi	copy_directory_done		*  cat_pathname エラー
 		bra	copy_directory
 
-copy_file_or_directory_2:
+copy_file_or_directory_3:
 		tst.l	d1
 		bpl	copy_file
 
+		*  sourceはopenできなかった
+		*  ディレクトリかボリュームラベルか、openエラー
 		link	a6,#copy_directory_auto_pad
 		movem.l	d4/a4,-(a7)
 		lea	copy_directory_pathbuf(a6),a2
-		bsr	is_directory_2			*  sourceがディレクトリかどうかを調べる
+		bsr	is_directory_2			*  ディレクトリか？
 		bne	copy_directory_0
 
 		movem.l	(a7)+,d4/a4
 		unlk	a6
 		move.l	d1,d0
-		cmp.l	#EDIRVOL,d0
+		cmp.l	#EDIRVOL,d0			*  ボリュームラベルか？
 		bne	perror
 ****************
 *
@@ -1180,10 +1419,7 @@ copy_file_contents:
 		cmp.l	#-1,d1
 		bne	copy_file_source_ok
 
-		clr.w	-(a7)
-		pea	source_pathname(pc)
-		DOS	_OPEN
-		addq.l	#6,a7
+		bsr	open_source
 		move.l	d0,d1
 		bmi	copy_file_perror
 copy_file_source_ok:
@@ -1356,25 +1592,22 @@ scan_directory_contents_loop:
 		tst.l	d0
 		bmi	scan_directory_contents_done
 
-		lea	filesbuf+ST_NAME(pc),a0
-		cmpi.b	#'.',(a0)
-		bne	scan_directory_contents_enter
-
-		tst.b	1(a0)
-		beq	scan_directory_contents_continue
-
-		cmpi.b	#'.',1(a0)
-		bne	scan_directory_contents_enter
-
-		tst.b	2(a0)
-		beq	scan_directory_contents_continue
-scan_directory_contents_enter:
 		btst	#FLAG_V,d5
-		bne	scan_directory_contents_enter_1
+		bne	scan_directory_contents_vol_ok
 
 		btst.b	#MODEBIT_VOL,filesbuf+ST_MODE(pc)
 		bne	scan_directory_contents_continue	*  ボリューム・ラベルはコピーしない
-scan_directory_contents_enter_1:
+scan_directory_contents_vol_ok:
+		btst	#FLAG_S,d5
+		beq	scan_directory_contents_sys_ok
+
+		btst.b	#MODEBIT_SYS,filesbuf+ST_MODE(pc)
+		bne	scan_directory_contents_continue
+scan_directory_contents_sys_ok:
+		lea	filesbuf+ST_NAME(pc),a0
+		bsr	isrel
+		bne	scan_directory_contents_continue
+
 		bsr	strlen
 		addq.l	#6,d0
 		sub.l	d0,d4
@@ -1690,6 +1923,41 @@ do_verbose:
 verbose_done:
 		rts
 *****************************************************************
+isrel:
+		moveq	#0,d0
+		cmpi.b	#'.',(a0)
+		bne	isrel_return
+
+		moveq	#1,d0
+		tst.b	1(a0)
+		beq	isrel_return
+
+		moveq	#0,d0
+		cmpi.b	#'.',1(a0)
+		bne	isrel_return
+
+		tst.b	2(a0)
+		bne	isrel_return
+
+		moveq	#2,d0
+isrel_return:
+		tst.l	d0
+		rts
+*****************************************************************
+find_dot:
+		move.l	a0,-(a7)
+find_dot_loop:
+		move.b	(a0)+,d0
+		beq	find_dot_return
+
+		cmp.b	#'.',d0
+		bne	find_dot_loop
+find_dot_return:
+		subq.l	#1,a0
+		move.l	a0,d0
+		sub.l	(a7)+,d0
+		rts
+*****************************************************************
 getdno:
 		movem.l	d1/a0-a1,-(a7)
 		bsr	getdno_sub
@@ -1717,7 +1985,7 @@ getdno:
 
 		moveq	#0,d1
 		move.b	(a0),d1
-		sub.w	#'A'-1,d1
+		sub.w	#'A',d1
 getdno_ok:
 		move.l	d1,d0
 getdno_return:
@@ -1734,6 +2002,7 @@ getdno_sub:
 getdno_sub_ok:
 		moveq	#0,d1
 		move.w	(a1),d1
+		subq.w	#1,d1
 		tst.l	d0
 		rts
 *****************************************************************
@@ -1775,7 +2044,7 @@ unlink:
 		rts
 *****************************************************************
 open_source:
-		move.l	a1,-(a7)
+		movem.l	d1-d2/a1,-(a7)
 		lea	source_pathname(pc),a1
 		move.l	source_mode,d1
 		move.l	source_time,d2
@@ -1790,7 +2059,7 @@ open_source_1:
 		bsr	xopen
 		move.l	d1,source_mode
 		move.l	d2,source_time
-		movea.l	(a7)+,a1
+		movem.l	(a7)+,d1-d2/a1
 		tst.l	d0
 		rts
 *****************************************************************
@@ -1943,29 +2212,6 @@ fclose:
 fclose_return:
 		rts
 *****************************************************************
-* cat_pathname_x
-*
-* CALL
-*      A0     result buffer (MAXPATH+1バイト必要)
-*      A1     points head
-*      A2     points tail
-*
-* RETURN
-*      A1     next word
-*      A3     tail pointer of result buffer
-*      D0.L   positive if success.
-*      CCR    TST.L D0
-*****************************************************************
-cat_pathname_x:
-		bsr	cat_pathname
-		bpl	cat_pathname_x_return
-
-		lea	msg_too_long_pathname(pc),a2
-		bsr	werror_myname_word_colon_msg
-		tst.l	d0
-cat_pathname_x_return:
-		rts
-*****************************************************************
 lgetmode:
 		moveq	#-1,d0
 lchmod:
@@ -1999,12 +2245,20 @@ is_chrdev_1:
 		rts
 *****************************************************************
 make_dirsearchpath:
-		movem.l	a0-a2,-(a7)
+		movem.l	a1-a2,-(a7)
+		move.l	a0,-(a7)
 		movea.l	a0,a1
 		movea.l	a2,a0
 		lea	dos_wildcard_all(pc),a2
-		bsr	cat_pathname_x
-		movem.l	(a7)+,a0-a2
+		bsr	cat_pathname
+		movea.l	(a7)+,a0
+		bpl	make_dirsearchpath_return
+
+		lea	msg_too_long_pathname(pc),a2
+		bsr	werror_myname_word_colon_msg
+		moveq	#-1,d0
+make_dirsearchpath_return:
+		movem.l	(a7)+,a1-a2
 		rts
 *****************************************************************
 * is_directory, is_directory_2 - 名前がディレクトリであるかどうかを調べる
@@ -2131,7 +2385,7 @@ perror_2:
 .data
 
 	dc.b	0
-	dc.b	'## cp 1.9 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
+	dc.b	'## cp 2.0 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
 
 .even
 perror_table:
@@ -2189,6 +2443,7 @@ msg_and:			dc.b	' と ',0
 msg_are_identical:		dc.b	' とは同一のファイルです（コピーしません）',0
 msg_is_directory:		dc.b	'ディレクトリです（コピーしません）',0
 msg_is_volumelabel:		dc.b	'ボリューム・ラベルです（コピーしません）',0
+msg_is_systemfile:			dc.b	'システム・ファイルです（コピーしません）',0
 msg_is_device:			dc.b	'キャラクタ・デバイスです（コピーしません）',0
 msg_dont_make_symbolic_link:	dc.b	'相対シンボリック・リンクは‘.’にのみ作成可能です',0
 msg_cannot_access_link:		dc.b	'lndrvが組み込まれていないためシンボリック・リンクの参照ファイルにアクセスできません',0
@@ -2204,15 +2459,15 @@ msg_cannot_overwrite_symlink:	dc.b	'シンボリック・リンクには書き込めません',0
 msg_cannot_create_link:		dc.b	'シンボリック・リンクを作成できません; ファイルが存在しています',0
 msg_volume_label_exists:	dc.b	'ボリューム・ラベルをコピーしません; ボリューム・ラベルが存在しています',0
 msg_usage:			dc.b	CR,LF,CR,LF
-	dc.b	'使用法:  cp [-IVadfinpsuv] [-m <属性変更式>] [--] f1 f2',CR,LF
+	dc.b	'使用法:  cp [-ISVadfinpsuv] [-m <属性変更式>] [--] f1 f2',CR,LF
 	dc.b	'              f1: コピーするファイルまたは入力デバイス',CR,LF
 	dc.b	'              f2: 複製ファイル名または出力デバイス',CR,LF,CR,LF
 
-	dc.b	'         cp {-R|-r} [-IVadefinpsuvx] [-m <属性変更式>] [--] d1 d2',CR,LF
+	dc.b	'         cp {-R|-r} [-CDILUSVadefinpsuvx] [-m <属性変更式>] [--] d1 d2',CR,LF
 	dc.b	'              d1: コピーするディレクトリ',CR,LF
 	dc.b	'              d2: 複製ディレクトリ名（新規）',CR,LF,CR,LF
 
-	dc.b	'         cp [-IPRVadefinprsuvx] [-m <属性変更式>] [--] any ... targetdir',CR,LF
+	dc.b	'         cp [-CDILPRSUVadefinprsuvx] [-m <属性変更式>] [--] any ... targetdir',CR,LF
 	dc.b	'              any: コピーするファイルやディレクトリ',CR,LF
 	dc.b	'              targetdir: コピー先ディレクトリ',CR,LF,CR,LF
 
@@ -2230,6 +2485,8 @@ source_time:		ds.l	1
 realdest_mode:		ds.l	1
 realdest_time:		ds.l	1
 drive:			ds.l	1
+copy_into_dir_sourceP:	ds.l	1
+copy_into_dir_destP:	ds.l	1
 .even
 fatchkbuf0:		ds.b	14+8			* +8 : fatchkバグ対策
 .even

@@ -9,9 +9,9 @@ CP(1)          Human68k ITA TOOLBOX User's Manual           CP(1)
      cp - ファイルやディレクトリをコピーする
 
 形式
-     cp [ -IRVadefinprsuvx ] [ -m mode ] [ -- ] source dest
+     cp [ -IRSVadefinprsuvx ] [ -m mode ] [ -- ] source dest
 
-     cp [ -IPRVadefinprsuvx ] [ -m mode ] [ -- ] source ...
+     cp [ -CDILPRSUVadefinprsuvx ] [ -m mode ] [ -- ] source ...
      targetdir
 
 解説
@@ -83,6 +83,17 @@ CP(1)          Human68k ITA TOOLBOX User's Manual           CP(1)
 
      cp には 次のオプションがあります．
 
+     -C        ファイルやディレクトリを元の名前のままコピーする場
+               合において，コピー先の名前をMS-DOSのディレクトリに
+               納まるよう切り詰めます．ただし . を 2個以上含む名
+               前や . で始まる名前のファイルやディレクトリはコピー
+               しません．
+
+     -D        ファイルやディレクトリを元の名前のままコピーする場
+               合において，MS-DOSのディレクトリに納まらない名前の
+               ファイルやディレクトリをコピーしません．このオプショ
+               ンは -C オプションを覆います．
+
      -I        ファイルやディレクトリ毎に問い合わせを行います．問
                い合わせに対して‘y’で始まる行を入力すると通常ど
                おり処理され，それ以外の入力ではコピーをとりやめて
@@ -90,6 +101,10 @@ CP(1)          Human68k ITA TOOLBOX User's Manual           CP(1)
                プションは -i オプションを覆いますが，コピー先に既
                にファイルがある場合には -i オプションと同じ処理が
                行われます．
+
+     -L        ファイルやディレクトリを元の名前のままコピーする場
+               合において，小文字を含む名前のファイルやディレクト
+               リをコピーしません．
 
      -P        たとえば cp -P a/b/c /d/e/f G:/h/i/j dir では，
                a/b/c を dir/a/b/c に，/d/e/f を dir/d/e/f に，
@@ -102,6 +117,11 @@ CP(1)          Human68k ITA TOOLBOX User's Manual           CP(1)
                プションの影響も受けません．
 
      -R, -r    ディレクトリを再帰的にコピーします．
+
+     -S        システム・ファイルをコピーしません．
+
+     -U        ファイルやディレクトリを元の名前のままコピーする場
+               合に，コピー先の名前を大文字にします．
 
      -V        ボリューム・ラベルもコピーします．
 
@@ -210,14 +230,14 @@ CP(1)          Human68k ITA TOOLBOX User's Manual           CP(1)
      ディレクトリの再帰の回数は64回に制限されています．
 
 バージョン
-     1.9
+     2.0
 
 制作・著作
      Copyright(C)1992-93 by 板垣 史彦 (Itagaki Fumihiko)
 
 
 
-1.9                 Last change: 04 Nov 1993     Itagaki Fumihiko
+2.0                 Last change: 13 Nov 1993     Itagaki Fumihiko
 
 
 
