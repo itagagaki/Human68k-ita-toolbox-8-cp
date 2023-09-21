@@ -28,6 +28,18 @@
 * Itagaki Fumihiko 16-Feb-93  -V オプションの追加
 * Itagaki Fumihiko 16-Feb-93  その他些細な修正と最適化
 * 1.5
+* Itagaki Fumihiko 18-Feb-93  source が symbolic link であると exceptional abort するバグ
+*                             （v1.5 でのエンバグ）を修正
+* Itagaki Fumihiko 20-Feb-93  確認メッセージを若干詳しくした
+* Itagaki Fumihiko 20-Feb-93  ボリューム・ラベルのコピー先のディレクトリ内にボリューム・ラベ
+*                             ルが存在している場合，-f オプションが指定されていれば，それを
+*                             予め強制的に削除してからコピーし，そうでなければエラーとなるよ
+*                             うにした．
+* Itagaki Fumihiko 20-Feb-93  cp -r foo foo/bar （foo/bar は新規）のようなケースで無限再帰し
+*                             ないようにした．ただし cp -r foo foo/bar/baz のようなケースで
+*                             は，やはり無限再帰する．
+* Itagaki Fumihiko 20-Feb-93  その他些細だが重要な修正
+* 1.6
 *
 * Usage: cp [ -IRVadfinpsuv ] [ -m {[ugoa]{{+-=}[ashrwx]}...}[,...] ] [ - ] <ファイル1> <ファイル2>
 *        cp -Rr [ -IVadefinpsuv ] [ -m {[ugoa]{{+-=}[ashrwx]}...}[,...] ] [ - ] <ディレクトリ1> <ディレクトリ2>
@@ -45,10 +57,11 @@
 .xref strlen
 .xref strcpy
 .xref strfor1
+.xref strmove
+.xref memmovi
 .xref headtail
 .xref cat_pathname
 .xref strip_excessive_slashes
-.xref fclose
 
 REQUIRED_OSVER	equ	$200			*  2.00以降
 
@@ -126,13 +139,18 @@ start1:
 		bsr	malloc
 		sub.l	#$81000000,d0
 		cmp.l	#1024,d0
-		blo	insufficient_memory
+		blo	no_buffer
 
 		move.l	d0,d4				*  D4.L : バッファサイズ
 		bsr	malloc
-		bmi	insufficient_memory
+		bmi	no_buffer
 
 		movea.l	d0,a4				*  A4 : バッファ
+		bra	buffer_ok
+
+no_buffer:
+		moveq	#0,d4
+buffer_ok:
 	*
 	*  lndrv が組み込まれているかどうかを検査する
 	*
@@ -627,9 +645,10 @@ copy_file_or_directory_return:
 *      D5.L の FLAG_path bit はクリアされることがある
 *****************************************************************
 copy_directory_depth = -4
-copy_directory_pathbuf = copy_directory_depth-((((MAXPATH+1)+1)>>1)<<1)
-copy_directory_filesbuf = copy_directory_pathbuf-(((STATBUFSIZE+1)>>1)<<1)
-copy_directory_autosize = -copy_directory_filesbuf
+copy_directory_tableptr = copy_directory_depth-4
+copy_directory_nentries = copy_directory_tableptr-4
+copy_directory_pathbuf = copy_directory_nentries-((((MAXPATH+1)+1)>>1)<<1)
+copy_directory_autosize = -copy_directory_pathbuf
 
 copy_file_or_directory_0:
 		move.l	#-1,drive
@@ -652,7 +671,8 @@ copy_file_or_directory_1:
 		*
 		*  sourceはopenできなかった ... ディレクトリかどうかを調べる
 		*
-		link	a6,#copy_directory_filesbuf
+		link	a6,#copy_directory_pathbuf
+		movem.l	d4/a4,-(a7)
 		lea	copy_directory_pathbuf(a6),a2
 		bsr	is_directory_2			*  sourceがディレクトリかどうかを調べる
 		bmi	copy_directory_done		*  エラー
@@ -660,15 +680,16 @@ copy_file_or_directory_1:
 
 		*  ディレクトリではない ...
 		*
+		movem.l	(a7)+,d4/a4
 		unlk	a6
-		*
-		*  エラーが EDIRVOL であれば，-V が指定されていればコピーする
-		*  さもなくばエラーを表示する
-		*
 		move.l	d1,d0
 		cmp.l	#EDIRVOL,d0
-		bne	copy_directory_perror
-
+		bne	perror
+		*
+		*  EDIRVOL ...
+		*     -V が指定されていればコピーする．
+		*     さもなくばエラーとする．
+		*
 		btst	#FLAG_V,d5
 		bne	copy_volumelabel
 
@@ -792,6 +813,7 @@ copy_file_check_dirvol:
 		lea	msg_cannot_overwrite_dir(pc),a2
 copy_file_destination_error:
 		movea.l	a1,a0
+copy_file_error:
 		bsr	werror_myname_word_colon_msg
 		bra	copy_file_done
 
@@ -875,12 +897,12 @@ copy_file_not_identical:
 		cmp.l	d3,d0
 		bhs	copy_file_done
 update_ok:
+		moveq	#0,d0
 		bsr	confirm_overwrite
 		bne	copy_file_done
 
 		move.w	d2,d0
 		bsr	fclose
-			* エラー処理省略 (無視)
 		moveq	#-1,d2
 		btst	#FLAG_f,d5
 		bne	remove_and_create_dest_with_source_mode
@@ -905,7 +927,7 @@ re_create_dest_with_arc:
 
 remove_and_create_dest_with_source_mode:
 		btst	#FLAG_n,d5
-		bne	create_dest_3
+		bne	create_dest_4
 
 .if 0
 		*  GNU fileutils 3.3 の cp では，destinationがシンボリック・
@@ -925,6 +947,7 @@ remove_and_create_dest_with_source_mode:
 		bra	create_dest_with_source_mode_ok
 
 create_dest_with_source_mode:
+		moveq	#0,d0
 		bsr	confirm_copy
 		bne	copy_file_done
 create_dest_with_source_mode_ok:
@@ -954,6 +977,35 @@ create_dest_2:
 		btst	#MODEBIT_LNK,d0			*  シンボリック・リンクに
 		bne	copy_file_destination_error	*  上書きすることはできない
 create_dest_3:
+		movem.l	a0-a1,-(a7)
+		bsr	find_volumelabel
+		tst.l	d0
+		bmi	check_volumelabel_done
+
+		btst	#FLAG_f,d5
+		beq	check_volumelabel_done
+remove_volumelabel_loop:
+		tst.l	d0
+		bmi	check_volumelabel_done
+
+		lea	filesbuf+ST_NAME(pc),a1
+		bsr	strcpy
+		move.l	a0,-(a7)
+		lea	pathname_buf(pc),a0
+		bsr	unlink
+		movea.l	(a7)+,a0
+remove_volumelabel_continue:
+		pea	filesbuf(pc)
+		DOS	_NFILES
+		addq.l	#4,a7
+		bra	remove_volumelabel_loop
+
+check_volumelabel_done:
+		movem.l	(a7)+,a0-a1
+		lea	msg_volume_label_exists(pc),a2
+		tst.l	d0
+		bpl	copy_file_error
+create_dest_4:
 		bsr	verbose
 		btst	#FLAG_n,d5
 		bne	copy_file_done
@@ -981,6 +1033,9 @@ copy_file_contents:
 		bra	copy_write
 
 copy_loop:
+		tst.l	d4
+		beq	insufficient_memory
+
 		move.l	d4,-(a7)
 		move.l	a4,-(a7)
 		move.w	d1,-(a7)
@@ -1026,10 +1081,8 @@ copy_file_date_done:
 copy_file_done:
 		move.l	d2,d0
 		bsr	fclosex
-			* エラー処理省略
 		move.l	d1,d0
 		bra	fclosex
-			* エラー処理省略
 
 
 copy_file_or_directory_disk_full:
@@ -1069,7 +1122,7 @@ copy_directory:
 	*  -x のドライブの設定とチェック
 	*
 		btst	#FLAG_x,d5
-		beq	copy_directory_drive_ok		*  チェック不要
+		beq	do_copy_directory		*  チェック不要
 
 		tst.l	drive
 		bmi	copy_directory_get_drive
@@ -1078,16 +1131,68 @@ copy_directory:
 		lea	source_pathname(pc),a0
 		bsr	getdno
 		movea.l	(a7)+,a0
-		bmi	copy_directory_drive_ok
+		bmi	do_copy_directory
 
 		cmp.l	drive,d0
 		bne	copy_directory_done
-		bra	copy_directory_drive_ok
+		bra	do_copy_directory
 
 copy_directory_get_drive:
 		bsr	getdno
 		move.l	d0,drive
-copy_directory_drive_ok:
+do_copy_directory:
+	*
+	*  ソース・ディレクトリ下のファイルを検索する
+	*
+		move.l	a4,copy_directory_tableptr(a6)
+		clr.l	copy_directory_nentries(a6)
+		movem.l	a0-a1,-(a7)
+		move.w	#MODEVAL_ALL,-(a7)		*  すべてのエントリを検索する
+		move.l	a2,-(a7)
+		pea	filesbuf(pc)
+		DOS	_FILES
+		lea	10(a7),a7
+scan_directory_contents_loop:
+		tst.l	d0
+		bmi	scan_directory_contents_done
+
+		lea	filesbuf+ST_NAME(pc),a0
+		cmpi.b	#'.',(a0)
+		bne	scan_directory_contents_enter
+
+		tst.b	1(a0)
+		beq	scan_directory_contents_continue
+
+		cmpi.b	#'.',1(a0)
+		bne	scan_directory_contents_enter
+
+		tst.b	2(a0)
+		beq	scan_directory_contents_continue
+scan_directory_contents_enter:
+		btst	#FLAG_V,d5
+		bne	scan_directory_contents_enter_1
+
+		btst.b	#MODEBIT_VOL,filesbuf+ST_MODE(pc)
+		bne	scan_directory_contents_continue	*  ボリューム・ラベルはコピーしない
+scan_directory_contents_enter_1:
+		bsr	strlen
+		addq.l	#1,d0
+		sub.l	d0,d4
+		bcs	insufficient_memory
+
+		movea.l	a0,a1
+		exg	a0,a4
+		bsr	strmove
+		exg	a0,a4
+		addq.l	#1,copy_directory_nentries(a6)
+scan_directory_contents_continue:
+		pea	filesbuf(pc)
+		DOS	_NFILES
+		addq.l	#4,a7
+		bra	scan_directory_contents_loop
+
+scan_directory_contents_done:
+		movem.l	(a7)+,a0-a1
 	*
 	*  destinationをチェックする
 	*
@@ -1146,6 +1251,7 @@ copy_directory_perror:
 
 copy_directory_dest_is_dir:
 		exg	a0,a1
+		moveq	#MODEVAL_DIR,d0
 		bsr	confirm_copy
 		exg	a0,a1
 		bne	copy_directory_done
@@ -1154,6 +1260,7 @@ copy_directory_dest_is_dir:
 copy_directory_dest_is_nondir:
 		*  real destination が non-directory
 		exg	a0,a1
+		moveq	#MODEVAL_DIR,d0
 		bsr	confirm_overwrite
 		exg	a0,a1
 		bne	copy_directory_done
@@ -1174,6 +1281,7 @@ copy_directory_dest_is_nondir:
 
 copy_directory_do_mkdir:
 		exg	a0,a1
+		moveq	#MODEVAL_DIR,d0
 		bsr	confirm_copy
 		exg	a0,a1
 		bne	copy_directory_done
@@ -1224,7 +1332,6 @@ copy_directory_attributes:
 		addq.l	#6,a7
 		move.w	d1,d0
 		bsr	fclose
-			* エラー処理省略 (無視)
 copy_directory_mode:
 	*
 	*  属性をコピーする
@@ -1240,49 +1347,22 @@ copy_directory_mode_1:
 			* エラー処理省略 (無視)
 copy_directory_contents:
 	*
-	*  ソース・ディレクトリ下のファイルを再帰的にコピーする
+	*  ソース・ディレクトリ下のファイルをコピーする
 	*
 		bclr	#FLAG_path,d5
-		move.w	#MODEVAL_ALL,-(a7)		*  すべてのエントリを検索する
-		move.l	a2,-(a7)
-		pea	copy_directory_filesbuf(a6)
-		DOS	_FILES
-		lea	10(a7),a7
 copy_directory_contents_loop:
-		tst.l	d0
-		bmi	copy_directory_done
+		subq.l	#1,copy_directory_nentries(a6)
+		bcs	copy_directory_done
 
-		lea	copy_directory_filesbuf+ST_NAME(a6),a0
-		cmpi.b	#'.',(a0)
-		bne	copy_directory_contents_dothis
-
-		tst.b	1(a0)
-		beq	copy_directory_sub_continue
-
-		cmpi.b	#'.',1(a0)
-		bne	copy_directory_contents_dothis
-
-		tst.b	2(a0)
-		beq	copy_directory_sub_continue
-copy_directory_contents_dothis:
-		btst	#FLAG_V,d5
-		bne	copy_directory_contents_dothis_1
-
-		btst.b	#MODEBIT_VOL,copy_directory_filesbuf+ST_MODE(a6)
-		bne	copy_directory_sub_continue	*  ボリューム・ラベルはコピーしない
-copy_directory_contents_dothis_1:
 		move.l	a1,-(a7)
-		movea.l	a0,a1
+		movea.l	copy_directory_tableptr(a6),a1
 		movea.l	a3,a0
-		bsr	strcpy
+		bsr	strmove
+		move.l	a1,copy_directory_tableptr(a6)
 		movea.l	(a7)+,a1
 		movea.l	a2,a0
 		move.l	copy_directory_depth(a6),d0
 		bsr	copy_into_dir
-copy_directory_sub_continue:
-		pea	copy_directory_filesbuf(a6)
-		DOS	_NFILES
-		addq.l	#4,a7
 		bra	copy_directory_contents_loop
 
 dir_too_deep:
@@ -1294,8 +1374,40 @@ cannot_copy_directory:
 		lea	msg_is_directory(pc),a2
 		bsr	werror_myname_word_colon_msg
 copy_directory_done:
+		movem.l	(a7)+,d4/a4
 		unlk	a6
 		rts
+*****************************************************************
+find_volumelabel:
+		move.l	a1,-(a7)
+		move.l	source_mode,d0
+		bmi	find_volumelabel_none
+
+		btst	#MODEBIT_VOL,d0
+		beq	find_volumelabel_none
+
+		movea.l	a1,a0
+		bsr	headtail
+		movea.l	a0,a1
+		cmp.l	#MAXHEAD,d0
+		bhi	find_volumelabel_none
+
+		lea	pathname_buf(pc),a0
+		bsr	memmovi
+		lea	dos_wildcard_all(pc),a1
+		bsr	strcpy
+		move.w	#MODEVAL_VOL,-(a7)
+		pea	pathname_buf(pc)
+		pea	filesbuf(pc)
+		DOS	_FILES
+		lea	10(a7),a7
+find_volumelabel_return:
+		movea.l	(a7)+,a1
+		rts
+
+find_volumelabel_none:
+		moveq	#-1,d0
+		bra	find_volumelabel_return
 *****************************************************************
 open_source:
 		move.l	a1,-(a7)
@@ -1324,7 +1436,28 @@ do_confirm:
 		btst	#FLAG_n,d5
 		bne	confirm_yes
 
+		move.l	a0,-(a7)
+		move.l	d0,-(a7)
 		bsr	werror_myname
+		move.l	(a7)+,d0
+		bne	do_confirm_1
+
+		lea	msg_device(pc),a0
+		move.l	source_mode,d0
+		bmi	do_confirm_2
+do_confirm_1:
+		lea	msg_volumelabel(pc),a0
+		btst	#MODEBIT_VOL,d0
+		bne	do_confirm_2
+
+		lea	msg_directory(pc),a0
+		btst	#MODEBIT_DIR,d0
+		bne	do_confirm_2
+
+		lea	msg_file(pc),a0
+do_confirm_2:
+		bsr	werror
+		movea.l	(a7)+,a0
 		bsr	werror
 		lea	msg_wo(pc),a0
 		bsr	werror
@@ -1518,11 +1651,11 @@ xopen_on_lndrv:
 		exg	a0,a1
 		moveq	#-1,d1
 		movem.l	d4-d7/a0-a5,-(a7)
+		movea.l	LNDRV_O_FILES(a2),a3
 		move.w	#MODEVAL_ALL,-(a7)
 		move.l	a1,-(a7)
 		pea	filesbuf(pc)
 		movea.l	a7,a6
-		movea.l	LNDRV_O_FILES(a2),a3
 		jsr	(a3)
 		lea	10(a7),a7
 		tst.l	d0
@@ -1534,10 +1667,11 @@ xopen_on_lndrv:
 		swap	d2
 xopen_on_lndrv_1:
 		movem.l	d1-d2,-(a7)
+		movea.l	lndrv,a2
+		movea.l	LNDRV_O_OPEN(a2),a3
 		clr.w	-(a7)
 		move.l	a1,-(a7)
 		movea.l	a7,a6
-		movea.l	LNDRV_O_OPEN(a2),a3
 		jsr	(a3)
 		addq.l	#6,a7
 		movem.l	(a7)+,d1-d2
@@ -1585,7 +1719,12 @@ xopen_return:
 		rts
 *****************************************************************
 fclosex:
-		bpl	fclose
+		bmi	fclose_return
+fclose:
+		move.w	d0,-(a7)
+		DOS	_CLOSE
+		addq.l	#2,a7
+fclose_return:
 		rts
 *****************************************************************
 * cat_pathname_x
@@ -1764,7 +1903,7 @@ perror_2:
 .data
 
 	dc.b	0
-	dc.b	'## cp 1.5 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
+	dc.b	'## cp 1.6 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
 
 .even
 perror_table:
@@ -1825,12 +1964,17 @@ msg_is_volumelabel:		dc.b	'ボリューム・ラベルです（コピーしません）',0
 msg_is_device:			dc.b	'キャラクタ・デバイスです（コピーしません）',0
 msg_dont_make_symbolic_link:	dc.b	'相対シンボリック・リンクは‘.’にのみ作成可能です',0
 msg_cannot_access_link:		dc.b	'lndrvが組み込まれていないためシンボリック・リンクの参照ファイルにアクセスできません',0
+msg_device:			dc.b	'デバイス ',0
+msg_volumelabel:		dc.b	'ボリューム・ラベル ',0
+msg_directory:			dc.b	'ディレクトリ ',0
+msg_file:			dc.b	'ファイル ',0
 msg_confirm_overwrite:		dc.b	' に上書きしますか？ ',0
 msg_wo:				dc.b	' を ',0
 msg_confirm_copy:		dc.b	' にコピーしますか？ ',0
 msg_cannot_overwrite_dir:	dc.b	'ディレクトリには書き込めません',0
 msg_cannot_overwrite_symlink:	dc.b	'シンボリック・リンクには書き込めません',0
-msg_cannot_create_link:		dc.b	'シンボリック・リンクを作成できません: ファイルが存在しています',0
+msg_cannot_create_link:		dc.b	'シンボリック・リンクを作成できません; ファイルが存在しています',0
+msg_volume_label_exists:	dc.b	'ボリューム・ラベルをコピーしません; ボリューム・ラベルが存在しています',0
 msg_usage:			dc.b	CR,LF,CR,LF
 	dc.b	'使用法:  cp [-IVadfinpsuv] [-m <属性変更式>] [--] f1 f2',CR,LF
 	dc.b	'              f1: コピーするファイルまたは入力デバイス',CR,LF
