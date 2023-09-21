@@ -1521,7 +1521,7 @@ perror_2:
 .data
 
 	dc.b	0
-	dc.b	'## cp 1.0 ##  Copyright(C)1992 by Itagaki Fumihiko',0
+	dc.b	'## cp 1.1 ##  Copyright(C)1992 by Itagaki Fumihiko',0
 
 .even
 perror_table:
@@ -1622,11 +1622,12 @@ source_pathname:	ds.b	128
 realdest_pathname:	ds.b	128
 pathname_buf:		ds.b	128
 .even
-			ds.b	512+(copy_into_dir_autosize+4*12+copy_directory_autosize+4*3)*(MAXRECURSE+1)
+			ds.b	4096+(copy_into_dir_autosize+4*12+copy_directory_autosize+4*3)*(MAXRECURSE+1)
 			*  必要なスタック量は，再帰の度に消費されるスタック量と
 			*  その回数とで決まる．
-			*  その他にマージンを含めたミニマム量として 512バイトを確保しておく．
-			*  このプログラムでは 512バイトあれば充分である．
+			*  その他にマージンを含めたミニマム量として 4096バイトを確保しておく．
+			*  このプログラムでは 4096バイトあれば充分である．
+			*  （lndrv が 1.5KB程喰う可能性がある）
 			*  4*12 ... copy_into_dir でのセーブレジスタ D0-D3/D5/D7/A0-A3/A6/PC
 			*  4*3 ... copy_directory でのセーブレジスタ A0/A6/PC
 .even
