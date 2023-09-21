@@ -43,10 +43,14 @@
 * Itagaki Fumihiko 18-Feb-93  source が symbolic link であるとコピーできないことがあるバグ
 *                             （v1.5 でのエンバグ）を修正
 * 1.7
+* Itagaki Fumihiko 03-Nov-93  高速化
+* Itagaki Fumihiko 03-Nov-93  -m-w+x （-m と mode をくっつけて指定）を許す
+* Itagaki Fumihiko 03-Nov-93  -m 644 （8進数値表現）を許す
+* 1.8
 *
-* Usage: cp [ -IRVadfinpsuv ] [ -m {[ugoa]{{+-=}[ashrwx]}...}[,...] ] [ - ] <ファイル1> <ファイル2>
-*        cp -Rr [ -IVadefinpsuv ] [ -m {[ugoa]{{+-=}[ashrwx]}...}[,...] ] [ - ] <ディレクトリ1> <ディレクトリ2>
-*        cp [ -IPRVadefinprsuv ] [ -m {[ugoa]{{+-=}[ashrwx]}...}[,...] ] [ - ] <ファイル> ... <ディレクトリ>
+* Usage: cp [ -IRVadfginpsuv ] [ -m mode ] [ - ] <ファイル1> <ファイル2>
+*        cp -Rr [ -IVadefginpsuv ] [ -m mode ] [ - ] <ディレクトリ1> <ディレクトリ2>
+*        cp [ -IPRVadefginprsuv ] [ -m mode ] [ - ] <ファイル> ... <ディレクトリ>
 
 .include doscall.h
 .include error.h
@@ -90,6 +94,7 @@ FLAG_v		equ	10
 FLAG_x		equ	11
 FLAG_path	equ	12
 FLAG_V		equ	13
+FLAG_g		equ	14
 
 LNDRV_O_CREATE		equ	4*2
 LNDRV_O_OPEN		equ	4*3
@@ -251,6 +256,10 @@ decode_opt_loop2:
 		cmp.b	#'V',d0
 		beq	set_option
 
+		moveq	#FLAG_g,d1
+		cmp.b	#'g',d0
+		beq	set_option
+
 		cmp.b	#'m',d0
 		beq	decode_mode
 
@@ -286,97 +295,147 @@ set_option_done:
 		bra	decode_opt_loop1
 
 decode_mode:
-		tst.b	(a0)+
-		bne	bad_arg
+		tst.b	(a0)
+		bne	decode_mode_0
 
 		subq.l	#1,d7
 		bcs	too_few_args
 
+		addq.l	#1,a0
+decode_mode_0:
+		move.b	(a0),d0
+		cmp.b	#'0',d0
+		blo	decode_symbolic_mode
+
+		cmp.b	#'7',d0
+		bhi	decode_symbolic_mode
+
+	*  numeric mode
+
+		moveq	#0,d1
+scan_numeric_mode_loop:
+		move.b	(a0)+,d0
+		beq	scan_numeric_mode_done
+
+		sub.b	#'0',d0
+		blo	bad_arg
+
+		cmp.b	#7,d0
+		bhi	bad_arg
+
+		lsl.w	#3,d1
+		or.b	d0,d1
+		bra	scan_numeric_mode_loop
+
+scan_numeric_mode_done:
+		move.w	d1,d0
+		lsr.w	#3,d0
+		or.w	d0,d1
+		lsr.w	#3,d0
+		or.w	d0,d1
+		moveq	#0,d0
+		btst	#1,d1
+		beq	decode_numeric_mode_w_ok
+
+		bset	#MODEBIT_RDO,d0
+decode_numeric_mode_w_ok:
+		btst	#0,d1
+		beq	decode_numeric_mode_x_ok
+
+		bset	#MODEBIT_EXE,d0
+decode_numeric_mode_x_ok:
+		move.b	d0,mode_plus
+		move.b	#(MODEVAL_VOL|MODEVAL_DIR|MODEVAL_LNK|MODEVAL_ARC|MODEVAL_SYS|MODEVAL_HID),mode_mask
+		bra	decode_opt_loop1
+
+	*  symbolic mode
+
+decode_symbolic_mode:
 		move.b	#$ff,mode_mask
 		clr.b	mode_plus
-decode_mode_loop1:
+decode_symbolic_mode_loop1:
 		move.b	(a0)+,d0
 		beq	decode_opt_loop1
 
 		cmp.b	#',',d0
-		beq	decode_mode_loop1
+		beq	decode_symbolic_mode_loop1
 
 		subq.l	#1,a0
-decode_mode_loop2:
+decode_symbolic_mode_loop2:
 		move.b	(a0)+,d0
 		cmp.b	#'u',d0
-		beq	decode_mode_loop2
+		beq	decode_symbolic_mode_loop2
 
 		cmp.b	#'g',d0
-		beq	decode_mode_loop2
+		beq	decode_symbolic_mode_loop2
 
 		cmp.b	#'o',d0
-		beq	decode_mode_loop2
+		beq	decode_symbolic_mode_loop2
 
 		cmp.b	#'a',d0
-		beq	decode_mode_loop2
-decode_mode_loop3:
+		beq	decode_symbolic_mode_loop2
+decode_symbolic_mode_loop3:
 		cmp.b	#'+',d0
-		beq	decode_mode_plus
+		beq	decode_symbolic_mode_plus
 
 		cmp.b	#'-',d0
-		beq	decode_mode_minus
+		beq	decode_symbolic_mode_minus
 
 		cmp.b	#'=',d0
 		bne	bad_arg
 
 		move.b	#(MODEVAL_VOL|MODEVAL_DIR|MODEVAL_LNK),mode_mask
 		clr.b	mode_plus
-decode_mode_plus:
-		bsr	decode_mode_sub
+decode_symbolic_mode_plus:
+		bsr	decode_symbolic_mode_sub
 		or.b	d1,mode_plus
-		bra	decode_mode_continue
+		bra	decode_symbolic_mode_continue
 
-decode_mode_minus:
-		bsr	decode_mode_sub
+decode_symbolic_mode_minus:
+		bsr	decode_symbolic_mode_sub
 		not.b	d1
 		and.b	d1,mode_mask
 		and.b	d1,mode_plus
-decode_mode_continue:
+decode_symbolic_mode_continue:
 		tst.b	d0
 		beq	decode_opt_loop1
 
 		cmp.b	#',',d0
-		beq	decode_mode_loop1
-		bra	decode_mode_loop3
+		beq	decode_symbolic_mode_loop1
+		bra	decode_symbolic_mode_loop3
 
-decode_mode_sub:
+decode_symbolic_mode_sub:
 		moveq	#0,d1
-decode_mode_sub_loop:
+decode_symbolic_mode_sub_loop:
 		move.b	(a0)+,d0
 		moveq	#MODEBIT_ARC,d2
 		cmp.b	#'a',d0
-		beq	decode_mode_sub_set
+		beq	decode_symbolic_mode_sub_set
 
 		moveq	#MODEBIT_SYS,d2
 		cmp.b	#'s',d0
-		beq	decode_mode_sub_set
+		beq	decode_symbolic_mode_sub_set
 
 		moveq	#MODEBIT_HID,d2
 		cmp.b	#'h',d0
-		beq	decode_mode_sub_set
+		beq	decode_symbolic_mode_sub_set
 
 		cmp.b	#'r',d0
-		beq	decode_mode_sub_loop
+		beq	decode_symbolic_mode_sub_loop
 
 		moveq	#MODEBIT_RDO,d2
 		cmp.b	#'w',d0
-		beq	decode_mode_sub_set
+		beq	decode_symbolic_mode_sub_set
 
 		moveq	#MODEBIT_EXE,d2
 		cmp.b	#'x',d0
-		beq	decode_mode_sub_set
+		beq	decode_symbolic_mode_sub_set
 
 		rts
 
-decode_mode_sub_set:
+decode_symbolic_mode_sub_set:
 		bset	d2,d1
-		bra	decode_mode_sub_loop
+		bra	decode_symbolic_mode_sub_loop
 
 decode_opt_done:
 		subq.l	#2,d7
@@ -428,7 +487,7 @@ cp_into_dir_loop:
 		bsr	strip_excessive_slashes
 		move.l	#-1,drive
 		moveq	#0,d0
-		bsr	copy_into_dir
+		bsr	copy_into_dir_0
 		movea.l	a2,a0
 		subq.l	#1,d7
 		bcc	cp_into_dir_loop
@@ -471,7 +530,7 @@ cp_error_exit_3:
 		moveq	#3,d6
 		bra	exit_program
 *****************************************************************
-* copy_into_dir
+* copy_into_dir_0, copy_into_dir_1
 *
 *      A0 で示されるエントリを A1 で示されるディレクトリ下にコピーする
 *
@@ -484,38 +543,59 @@ cp_error_exit_3:
 destination = -((((MAXPATH+1)+1)>>1)<<1)
 copy_into_dir_autosize = -destination
 
-copy_into_dir:
+copy_into_dir_0:
+		move.l	#-1,source_mode
+		move.l	#-1,source_time
+copy_into_dir_1:
 		link	a6,#destination
 		movem.l	d0-d3/d5/d7/a0-a3,-(a7)
 		move.l	d0,d7
 	*
 	*  sourceをチェックする
 	*
+		move.l	source_mode,d0
+		bmi	copy_into_dir_check_source
+
+		btst	#MODEBIT_LNK,d0
+		beq	copy_into_dir_source_ok
+
+		btst	#FLAG_d,d5
+		beq	copy_into_dir_check_source
+copy_into_dir_source_ok:
+		move.l	a1,-(a7)
+		movea.l	a0,a1
+		lea	source_pathname(pc),a0
+		bsr	strcpy
+		movea.l	a1,a0
+		movea.l	(a7)+,a1
+		moveq	#-1,d1
+		bra	copy_into_dir_ok
+
+copy_into_dir_check_source:
 		bsr	open_source			*  sourceをopenしてみる
 		cmp.l	#-1,d0
 		beq	copy_into_dir_done
 
-		move.l	d0,d1
+		exg	d0,d1				*  D0.L == source_mode, D1.L == handle
+		tst.l	d0				*  mode
+		bpl	copy_into_dir_ok		*  modeがある == ブロック・デバイス上のエントリ
+
+		*  sourceはブロック・デバイス上のエントリではない
+		tst.l	d1				*  handle
 		bmi	copy_into_dir_cannot_open_source
 
-		*  sourceはopenされた
-		*  キャラクタ・デバイスならエラー
-		tst.l	source_mode
-		bpl	copy_into_dir_ok
-
+		*  sourceはブロック・デバイス上のエントリではないがopenされた
+		*  -> キャラクタ・デバイス -> エラー
+		move.l	d1,d0
 		bsr	fclose
 		lea	msg_is_device(pc),a2
 		bsr	werror_myname_word_colon_msg
 		bra	copy_into_dir_done
 
 copy_into_dir_cannot_open_source:
-		*  sourceはopenされなかった
-		*  -P ではsourceが存在するエントリであることをここでチェックしておく
+		*  sourceは存在しない．-P ではエラー．
 		btst	#FLAG_path,d5
-		beq	copy_into_dir_ok
-
-		bsr	lgetmode
-		bmi	copy_into_dir_perror
+		bne	copy_into_dir_perror
 copy_into_dir_ok:
 		btst	#FLAG_path,d5
 		beq	copy_into_dir_3
@@ -637,9 +717,10 @@ copy_file_or_directory_return:
 *
 *      copy_file_or_directory_1
 *
-*      予め open_source が先に行われて、source_pathname と source_mode が
-*      セットされているものとする．
-*      D1.L   sourceのファイル・ハンドル
+*      既に open_source が行われて，source_pathname，source_mode，
+*      source_time がセットされているものとする．
+*
+*      D1.L   sourceのファイル・ハンドル（-1 : 嘘open）
 *      D2.L   再帰の深さ
 *      D7.L   0
 *
@@ -660,6 +741,8 @@ copy_file_or_directory_0:
 		*
 		*  sourceをopenしてみる
 		*
+		move.l	#-1,source_mode
+		move.l	#-1,source_time
 		move.l	d2,-(a7)
 		bsr	open_source
 		move.l	(a7)+,d2
@@ -668,46 +751,67 @@ copy_file_or_directory_0:
 
 		move.l	d0,d1				*  D1.L : source のファイル・ハンドル
 copy_file_or_directory_1:
+		cmp.l	#-1,d1
+		bne	copy_file_or_directory_2
+
+		*  source はブロック・デバイス上のエントリであり，
+		*  source_mode と source_time は確定しているが，
+		*  まだ open していない．
+		move.l	source_mode,d0
+		btst	#MODEBIT_DIR,d0
+		bne	copy_file_or_directory_dir
+
+		btst	#MODEBIT_VOL,d0
+		bne	copy_volumelabel
+		bra	copy_file
+
+copy_file_or_directory_dir:
+		link	a6,#copy_directory_pathbuf
+		movem.l	d4/a4,-(a7)
+		lea	copy_directory_pathbuf(a6),a2
+		bsr	make_dirsearchpath
+copy_directory_0:
+		bmi	copy_directory_done		*  cat_pathname_x エラー
+		bra	copy_directory
+
+copy_file_or_directory_2:
 		tst.l	d1
-		bpl	copy_file			*  sourceはオープンできた
-							*  .. ディレクトリではない
-		*
-		*  sourceはopenできなかった ... ディレクトリかどうかを調べる
-		*
+		bpl	copy_file
+
 		link	a6,#copy_directory_pathbuf
 		movem.l	d4/a4,-(a7)
 		lea	copy_directory_pathbuf(a6),a2
 		bsr	is_directory_2			*  sourceがディレクトリかどうかを調べる
-		bmi	copy_directory_done		*  エラー
-		bne	copy_directory
+		bne	copy_directory_0
 
-		*  ディレクトリではない ...
-		*
 		movem.l	(a7)+,d4/a4
 		unlk	a6
 		move.l	d1,d0
 		cmp.l	#EDIRVOL,d0
 		bne	perror
-		*
-		*  EDIRVOL ...
-		*     -V が指定されていればコピーする．
-		*     さもなくばエラーとする．
-		*
-		btst	#FLAG_V,d5
-		bne	copy_volumelabel
-
-		lea	msg_is_volumelabel(pc),a2
-		bra	werror_myname_word_colon_msg
 ****************
 *
 *  ボリューム・ラベルをコピーする
 *
 copy_volumelabel:
+	*
+	*     -V が指定されていればコピーする．
+	*     さもなくばエラー．
+	*
+		btst	#FLAG_V,d5
+		bne	copy_file
+
+		lea	msg_is_volumelabel(pc),a2
+		bra	werror_myname_word_colon_msg
 ****************
 *
 *  ファイルをコピーする
 *
 copy_file:
+		st	source_fatchk_fail
+		btst	#FLAG_g,d5
+		bne	copy_file_x_ok
+
 		lea	fatchkbuf1(pc),a2
 		exg	a1,a2
 		move.l	a0,-(a7)
@@ -784,6 +888,13 @@ copy_file_s_ok:
 
 		bset	#FLAG_d,d5
 open_destination:
+		moveq	#-1,d1
+		moveq	#-1,d2
+		btst	#FLAG_u,d5
+		bne	open_destination_1
+
+		moveq	#0,d2
+open_destination_1:
 		bsr	xopen
 		move.l	d1,realdest_mode
 		move.l	d2,realdest_time
@@ -819,7 +930,6 @@ copy_file_destination_error:
 copy_file_error:
 		bsr	werror_myname_word_colon_msg
 		bra	copy_file_done
-
 
 check_destination:
 		tst.l	realdest_mode
@@ -940,12 +1050,28 @@ remove_and_create_dest_with_source_mode:
 		exg	a0,a1
 		*  これはおかしい
 .else
+.if 0
 		*  real destination を削除する
 		move.l	a0,-(a7)
 		lea	realdest_pathname(pc),a0
 		bsr	unlink
 		movea.l	(a7)+,a0
 		*  これが正しいと思う
+.else
+		*  削除する代わりに属性を変更して削除したふりをする．
+		move.l	realdest_mode,d0
+		and.w	#MODEVAL_LNK|MODEVAL_VOL|MODEVAL_SYS|MODEVAL_RDO,d0
+		beq	remove_dest_ok
+
+		move.l	a0,-(a7)
+		lea	realdest_pathname(pc),a0
+		moveq	#MODEVAL_ARC,d0
+		bsr	lchmod
+		movea.l	(a7)+,a0
+remove_dest_ok:
+		*  この方が速い．
+.endif
+		move.l	#-1,realdest_mode
 .endif
 		bra	create_dest_with_source_mode_ok
 
@@ -964,13 +1090,8 @@ create_dest_1:
 
 		move.w	#(MODEVAL_LNK|MODEVAL_ARC),d3
 create_dest_2:
-		move.l	a0,-(a7)
-		lea	realdest_pathname(pc),a0
-		bsr	lgetmode
-		movea.l	(a7)+,a0
+		move.l	realdest_mode,d0
 		bmi	create_dest_3
-
-		*  real destination が存在している
 
 		lea	msg_cannot_create_link(pc),a2
 		btst	#MODEBIT_LNK,d3			*  シンボリック・リンクを
@@ -980,17 +1101,42 @@ create_dest_2:
 		btst	#MODEBIT_LNK,d0			*  シンボリック・リンクに
 		bne	copy_file_destination_error	*  上書きすることはできない
 create_dest_3:
+		move.l	source_mode,d0
+		bmi	create_dest_4
+
+		btst	#MODEBIT_VOL,d0
+		beq	create_dest_4
+
+		*  source がボリューム・ラベルである
+		*  ターゲットにボリューム・ラベルが無いかどうかをチェックする
+
 		movem.l	a0-a1,-(a7)
-		bsr	find_volumelabel
+		movea.l	a1,a0
+		bsr	headtail
+		movea.l	a0,a1
+		cmp.l	#MAXHEAD,d0
+		bhi	check_volumelabel_ok
+
+		lea	pathname_buf(pc),a0
+		bsr	memmovi
+		lea	dos_wildcard_all(pc),a1
+		bsr	strcpy
+		move.w	#MODEVAL_VOL,-(a7)
+		pea	pathname_buf(pc)
+		pea	filesbuf(pc)
+		DOS	_FILES
+		lea	10(a7),a7
 		tst.l	d0
-		bmi	check_volumelabel_done
+		bmi	check_volumelabel_ok
 
 		btst	#FLAG_f,d5
-		beq	check_volumelabel_done
-remove_volumelabel_loop:
-		tst.l	d0
-		bmi	check_volumelabel_done
+		bne	remove_volumelabel_loop
 
+		movem.l	(a7)+,a0-a1
+		lea	msg_volume_label_exists(pc),a2
+		bra	copy_file_error
+
+remove_volumelabel_loop:
 		lea	filesbuf+ST_NAME(pc),a1
 		bsr	strcpy
 		move.l	a0,-(a7)
@@ -1001,13 +1147,10 @@ remove_volumelabel_continue:
 		pea	filesbuf(pc)
 		DOS	_NFILES
 		addq.l	#4,a7
-		bra	remove_volumelabel_loop
-
-check_volumelabel_done:
-		movem.l	(a7)+,a0-a1
-		lea	msg_volume_label_exists(pc),a2
 		tst.l	d0
-		bpl	copy_file_error
+		bpl	remove_volumelabel_loop
+check_volumelabel_ok:
+		movem.l	(a7)+,a0-a1
 create_dest_4:
 		bsr	verbose
 		btst	#FLAG_n,d5
@@ -1022,6 +1165,19 @@ create_dest_4:
 copy_file_contents:
 		move.l	d0,d2
 		bmi	copy_file_perror_1
+	*
+	*  sourceが偽openであればここで本当にopenする
+	*
+		cmp.l	#-1,d1
+		bne	copy_file_source_ok
+
+		clr.w	-(a7)
+		pea	source_pathname(pc)
+		DOS	_OPEN
+		addq.l	#6,a7
+		move.l	d0,d1
+		bmi	copy_file_perror
+copy_file_source_ok:
 	*
 	*  ファイルの内容をコピーする
 	*
@@ -1179,9 +1335,24 @@ scan_directory_contents_enter:
 		bne	scan_directory_contents_continue	*  ボリューム・ラベルはコピーしない
 scan_directory_contents_enter_1:
 		bsr	strlen
-		addq.l	#1,d0
+		addq.l	#6,d0
 		sub.l	d0,d4
 		bcs	insufficient_memory
+
+		move.w	filesbuf+ST_DATE(pc),d0
+		ror.w	#8,d0
+		move.b	d0,(a4)+
+		ror.w	#8,d0
+		move.b	d0,(a4)+
+
+		move.w	filesbuf+ST_TIME(pc),d0
+		ror.w	#8,d0
+		move.b	d0,(a4)+
+		ror.w	#8,d0
+		move.b	d0,(a4)+
+
+		move.b	filesbuf+ST_MODE(pc),d0
+		move.b	d0,(a4)+
 
 		movea.l	a0,a1
 		exg	a0,a4
@@ -1203,9 +1374,9 @@ scan_directory_contents_done:
 		exg	a0,a1
 		movem.l	a1,-(a7)
 		lea	realdest_pathname(pc),a1
-		bsr	xopen				*  D1.L : real destination の mode
-							*  D2.L : real destination の timestamp
-							*         ただしキャラクタ・デバイスならどちらも -1
+		moveq	#-1,d1
+		moveq	#0,d2
+		bsr	xopen
 		movem.l	(a7)+,a1
 		cmp.l	#-1,d0
 		beq	copy_directory_done
@@ -1359,13 +1530,24 @@ copy_directory_contents_loop:
 
 		move.l	a1,-(a7)
 		movea.l	copy_directory_tableptr(a6),a1
+		move.b	(a1)+,d0
+		lsl.w	#8,d0
+		move.b	(a1)+,d0
+		lsl.l	#8,d0
+		move.b	(a1)+,d0
+		lsl.l	#8,d0
+		move.b	(a1)+,d0
+		move.l	d0,source_time
+		moveq	#0,d0
+		move.b	(a1)+,d0
+		move.l	d0,source_mode
 		movea.l	a3,a0
 		bsr	strmove
 		move.l	a1,copy_directory_tableptr(a6)
 		movea.l	(a7)+,a1
 		movea.l	a2,a0
 		move.l	copy_directory_depth(a6),d0
-		bsr	copy_into_dir
+		bsr	copy_into_dir_1
 		bra	copy_directory_contents_loop
 
 dir_too_deep:
@@ -1379,47 +1561,6 @@ cannot_copy_directory:
 copy_directory_done:
 		movem.l	(a7)+,d4/a4
 		unlk	a6
-		rts
-*****************************************************************
-find_volumelabel:
-		move.l	a1,-(a7)
-		move.l	source_mode,d0
-		bmi	find_volumelabel_none
-
-		btst	#MODEBIT_VOL,d0
-		beq	find_volumelabel_none
-
-		movea.l	a1,a0
-		bsr	headtail
-		movea.l	a0,a1
-		cmp.l	#MAXHEAD,d0
-		bhi	find_volumelabel_none
-
-		lea	pathname_buf(pc),a0
-		bsr	memmovi
-		lea	dos_wildcard_all(pc),a1
-		bsr	strcpy
-		move.w	#MODEVAL_VOL,-(a7)
-		pea	pathname_buf(pc)
-		pea	filesbuf(pc)
-		DOS	_FILES
-		lea	10(a7),a7
-find_volumelabel_return:
-		movea.l	(a7)+,a1
-		rts
-
-find_volumelabel_none:
-		moveq	#-1,d0
-		bra	find_volumelabel_return
-*****************************************************************
-open_source:
-		move.l	a1,-(a7)
-		lea	source_pathname(pc),a1
-		bsr	xopen
-		move.l	d1,source_mode
-		move.l	d2,source_time
-		movea.l	(a7)+,a1
-		tst.l	d0
 		rts
 *****************************************************************
 confirm_overwrite:
@@ -1590,28 +1731,53 @@ unlink:
 		addq.l	#6,a7
 		rts
 *****************************************************************
+open_source:
+		move.l	a1,-(a7)
+		lea	source_pathname(pc),a1
+		move.l	source_mode,d1
+		move.l	source_time,d2
+		btst	#FLAG_p,d5
+		bne	open_source_1
+
+		btst	#FLAG_u,d5
+		bne	open_source_1
+
+		moveq	#0,d2
+open_source_1:
+		bsr	xopen
+		move.l	d1,source_mode
+		move.l	d2,source_time
+		movea.l	(a7)+,a1
+		tst.l	d0
+		rts
+*****************************************************************
 * xopen - ファイル（またはデバイス）をオープンする
 *
 * CALL
 *      A0     オープンするファイル（またはデバイス）名
 *      A1     実際にオープンしたファイル（またはデバイス）名を格納するバッファ
 *             （128バイト必要）
+*      D1.L   ファイルのモード．不明ならば -1．
+*      D2.L   ファイルのタイムスタンプ．不明ならば -1．取得しなくていいなら 0．
 *      D5.B   FLAG_dビットが立っていれば、ファイルがシンボリック・リンクであるとき
 *             リンク・ファイル自身をオープンする
 *
 * RETURN
 *      D0.L   オープンしたファイルハンドル．またはDOSエラー・コード
-*      D1.L   オープンしたファイルのモード．ただしキャラクタ・デバイスなら -1
-*      D2.L   オープンしたファイルのタイムスタンプ．ただしキャラクタ・デバイスなら -1
+*      D1.L   実際のファイルのモード．またはDOSエラー・コード
+*      D2.L   （CALL の D2.L が非0のとき）実際のファイルのタイムスタンプ．無ければ -1．
 *****************************************************************
 xopen:
-		movem.l	d3/a2-a3/a6,-(a7)
-		moveq	#-1,d2
+		movem.l	d4/a2-a3/a6,-(a7)
+		tst.l	d1
+		bpl	xopen_1
+
 		bsr	lgetmode
 		move.l	d0,d1
 		bmi	xopen_normal			*  ファイルは無い -> 通常の OPEN
 							*  （デバイスかも知れない）
-		btst	#MODEBIT_LNK,d0
+xopen_1:
+		btst	#MODEBIT_LNK,d1
 		beq	xopen_normal			*  SYMLINKではない -> 通常の OPEN
 
 		*  ファイルはシンボリック・リンクである
@@ -1619,6 +1785,12 @@ xopen:
 		btst	#FLAG_d,d5			*  -dフラグが指定されているなら
 		bne	xopen_link_on_lndrv		*  指定ファイルそのものをopenする
 
+		moveq	#-1,d1				*  modeは忘れる
+		tst.l	d2
+		beq	xopen_2
+
+		moveq	#-1,d2				*  タイムスタンプは忘れる
+xopen_2:
 		moveq	#LNDRV_getrealpath,d0
 		tst.l	lndrv
 		bne	xopen_on_lndrv			*  リンクが参照するファイルをopenする
@@ -1626,7 +1798,7 @@ xopen:
 		lea	msg_cannot_access_link(pc),a2
 		bsr	werror_myname_word_colon_msg
 		moveq	#-1,d0
-		bra	xopen_done_1
+		bra	xopen_done
 
 xopen_link_on_lndrv:
 		tst.l	lndrv				*  lndrvが常駐していないなら
@@ -1640,37 +1812,33 @@ xopen_on_lndrv:
 		DOS	_SUPER				*  スーパーバイザ・モードに切り換える
 		addq.l	#4,a7
 		move.l	d0,-(a7)			*  前の SSP の値
-		movem.l	d2/d4-d7/a0-a5,-(a7)
+		movem.l	d1-d3/d5-d7/a0-a5,-(a7)
 		move.l	a0,-(a7)
 		move.l	a1,-(a7)
 		jsr	(a3)
 		addq.l	#8,a7
-		movem.l	(a7)+,d2/d4-d7/a0-a5
+		movem.l	(a7)+,d1-d3/d5-d7/a0-a5
 		tst.l	d0
 		bmi	xopen_readlink_error
 
 		exg	a0,a1
 		bsr	strip_excessive_slashes
 		exg	a0,a1
-		moveq	#-1,d1
-		movem.l	d1-d2/d4-d7/a0-a5,-(a7)
-		movea.l	LNDRV_O_FILES(a2),a3
-		move.w	#MODEVAL_ALL,-(a7)
+
+		tst.l	d1
+		bpl	xopen_on_lndrv_1
+
+		movem.l	d2-d3/d5-d7/a0-a5,-(a7)
+		movea.l	LNDRV_O_CHMOD(a2),a3
+		move.w	#-1,-(a7)
 		move.l	a1,-(a7)
-		pea	filesbuf(pc)
 		movea.l	a7,a6
 		jsr	(a3)
-		lea	10(a7),a7
-		movem.l	(a7)+,d1-d2/d4-d7/a0-a5
-		tst.l	d0
-		bmi	xopen_on_lndrv_1
-
-		moveq	#0,d1
-		move.b	filesbuf+ST_MODE(pc),d1
-		move.l	filesbuf+ST_TIME(pc),d2
-		swap	d2
+		addq.l	#6,a7
+		movem.l	(a7)+,d2-d3/d5-d7/a0-a5
+		move.l	d0,d1
 xopen_on_lndrv_1:
-		movem.l	d1-d2/d4-d7/a0-a5,-(a7)
+		movem.l	d1-d3/d5-d7/a0-a5,-(a7)
 		movea.l	lndrv,a2
 		movea.l	LNDRV_O_OPEN(a2),a3
 		clr.w	-(a7)
@@ -1678,12 +1846,11 @@ xopen_on_lndrv_1:
 		movea.l	a7,a6
 		jsr	(a3)
 		addq.l	#6,a7
-		movem.l	(a7)+,d1-d2/d4-d7/a0-a5
-		move.l	d0,d3
-xopen_link_done:
+		movem.l	(a7)+,d1-d3/d5-d7/a0-a5
+		move.l	d0,d4
 		DOS	_SUPER				*  ユーザ・モードに戻す
 		addq.l	#4,a7
-		move.l	d3,d0
+		move.l	d4,d0
 		bra	xopen_done
 
 xopen_readlink_error:
@@ -1693,32 +1860,35 @@ xopen_normal:
 		exg	a0,a1
 		bsr	strcpy
 		exg	a0,a1
-		move.w	#MODEVAL_ALL,-(a7)
-		move.l	a0,-(a7)
-		pea	filesbuf(pc)
-		DOS	_FILES
-		lea	10(a7),a7
-		tst.l	d0
-		bmi	xopen_normal_1
-
-		move.l	filesbuf+ST_TIME(pc),d2
-		swap	d2
-xopen_normal_1:
 		clr.w	-(a7)
 		move.l	a0,-(a7)
 		DOS	_OPEN
 		addq.l	#6,a7
 xopen_done:
 		tst.l	d0
-		bmi	xopen_return
+		bmi	xopen_done_1
 
-		bsr	is_chrdev
-		beq	xopen_return			*  ブロック・デバイス
+		tst.l	d2
+		beq	xopen_done_1
+
+		cmp.l	#-1,d2
+		bne	xopen_return
+
+		exg	d0,d2
+		clr.l	-(a7)
+		move.w	d2,-(a7)
+		DOS	_FILEDATE			*  タイムスタンプを取得する
+		addq.l	#6,a7
+		exg	d0,d2
+		tst.l	d2
+		beq	xopen_done_1
+
+		cmp.l	#$ffff0000,d2
+		blo	xopen_return
 xopen_done_1:
-		moveq	#-1,d1
 		moveq	#-1,d2
 xopen_return:
-		movem.l	(a7)+,d3/a2-a3/a6
+		movem.l	(a7)+,d4/a2-a3/a6
 		rts
 *****************************************************************
 fclosex:
@@ -1732,8 +1902,16 @@ fclose_return:
 *****************************************************************
 * cat_pathname_x
 *
+* CALL
+*      A0     result buffer (MAXPATH+1バイト必要)
+*      A1     points head
+*      A2     points tail
+*
 * RETURN
-*      A2     破壊
+*      A1     next word
+*      A3     tail pointer of result buffer
+*      D0.L   positive if success.
+*      CCR    TST.L D0
 *****************************************************************
 cat_pathname_x:
 		bsr	cat_pathname
@@ -1777,6 +1955,15 @@ is_chrdev_1:
 		movem.l	(a7)+,d0
 		rts
 *****************************************************************
+make_dirsearchpath:
+		movem.l	a0-a2,-(a7)
+		movea.l	a0,a1
+		movea.l	a2,a0
+		lea	dos_wildcard_all(pc),a2
+		bsr	cat_pathname_x
+		movem.l	(a7)+,a0-a2
+		rts
+*****************************************************************
 * is_directory, is_directory_2 - 名前がディレクトリであるかどうかを調べる
 *
 * CALL
@@ -1806,18 +1993,14 @@ is_directory:
 		rts
 
 is_directory_2:
-		movem.l	a0-a2,-(a7)
 		tst.b	(a0)
 		beq	is_directory_false
 
-		movea.l	a0,a1
-		movea.l	a2,a0
-		lea	dos_wildcard_all(pc),a2
-		bsr	cat_pathname_x
+		bsr	make_dirsearchpath
 		bmi	is_directory_return
 
 		move.w	#MODEVAL_ALL,-(a7)		*  すべてのエントリを検索する
-		move.l	a0,-(a7)
+		move.l	a2,-(a7)
 		pea	filesbuf(pc)
 		DOS	_FILES
 		lea	10(a7),a7
@@ -1828,12 +2011,11 @@ is_directory_2:
 		beq	is_directory_true
 is_directory_false:
 		moveq	#0,d0
-		bra	is_directory_return
+		rts
 
 is_directory_true:
 		moveq	#1,d0
 is_directory_return:
-		movem.l	(a7)+,a0-a2
 		rts
 *****************************************************************
 werror_myname:
@@ -1906,7 +2088,7 @@ perror_2:
 .data
 
 	dc.b	0
-	dc.b	'## cp 1.7 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
+	dc.b	'## cp 1.8 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
 
 .even
 perror_table:
@@ -1979,19 +2161,19 @@ msg_cannot_overwrite_symlink:	dc.b	'シンボリック・リンクには書き込めません',0
 msg_cannot_create_link:		dc.b	'シンボリック・リンクを作成できません; ファイルが存在しています',0
 msg_volume_label_exists:	dc.b	'ボリューム・ラベルをコピーしません; ボリューム・ラベルが存在しています',0
 msg_usage:			dc.b	CR,LF,CR,LF
-	dc.b	'使用法:  cp [-IVadfinpsuv] [-m <属性変更式>] [--] f1 f2',CR,LF
+	dc.b	'使用法:  cp [-IVadfginpsuv] [-m <属性変更式>] [--] f1 f2',CR,LF
 	dc.b	'              f1: コピーするファイルまたは入力デバイス',CR,LF
 	dc.b	'              f2: 複製ファイル名または出力デバイス',CR,LF,CR,LF
 
-	dc.b	'         cp {-R|-r} [-IVadefinpsuvx] [-m <属性変更式>] [--] d1 d2',CR,LF
+	dc.b	'         cp {-R|-r} [-IVadefginpsuvx] [-m <属性変更式>] [--] d1 d2',CR,LF
 	dc.b	'              d1: コピーするディレクトリ',CR,LF
 	dc.b	'              d2: 複製ディレクトリ名（新規）',CR,LF,CR,LF
 
-	dc.b	'         cp [-IPRVadefinprsuvx] [-m <属性変更式>] [--] any ... targetdir',CR,LF
+	dc.b	'         cp [-IPRVadefginprsuvx] [-m <属性変更式>] [--] any ... targetdir',CR,LF
 	dc.b	'              any: コピーするファイルやディレクトリ',CR,LF
 	dc.b	'              targetdir: コピー先ディレクトリ',CR,LF,CR,LF
 
-	dc.b	'         属性変更式: {[ugoa]{{+-=}[ashrwx]}...}[,...]'
+	dc.b	'         属性変更式: {[ugoa]{{+-=}[ashrwx]}...}[,...] または 8進数値表現'
 msg_newline:		dc.b	CR,LF,0
 msg_arrow:		dc.b	' -> ',0
 msg_mkdir:		dc.b	'mkdir ',0
