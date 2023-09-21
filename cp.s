@@ -18,8 +18,8 @@
 *                             -x が正しく働かない可能性があった．
 * 1.4
 * Itagaki Fumihiko 12-Feb-93  特殊デバイスに対応し，source と destination のどちらかで FATCHK
-*                             が EBADPARAM 以外のエラーを返した場合には identical ではない見な
-*                             すようにした．
+*                             が EBADPARAM 以外のエラーを返した場合には identical ではないと見
+*                             なすようにした．
 * Itagaki Fumihiko 13-Feb-93  -P foo bar で bar/foo ではなく bar/oo が作成されてしまうバグを修
 *                             正．
 * Itagaki Fumihiko 16-Feb-93  ディレクトリを新規コピーするとき，コピー元が「属性を持たないディ
@@ -46,11 +46,16 @@
 * Itagaki Fumihiko 03-Nov-93  高速化
 * Itagaki Fumihiko 03-Nov-93  -m-w+x （-m と mode をくっつけて指定）を許す
 * Itagaki Fumihiko 03-Nov-93  -m 644 （8進数値表現）を許す
+* Itagaki Fumihiko 03-Nov-93  -g オプションの追加
 * 1.8
+* Itagaki Fumihiko 04-Nov-93  -g オプションを廃止．その代わり，コピー元ファイルとコピー先ファイ
+*                             ルが同一でないことが理屈の上で明確である場合に限りチェックしない
+*                             ようにした．
+* 1.9
 *
-* Usage: cp [ -IRVadfginpsuv ] [ -m mode ] [ - ] <ファイル1> <ファイル2>
-*        cp -Rr [ -IVadefginpsuv ] [ -m mode ] [ - ] <ディレクトリ1> <ディレクトリ2>
-*        cp [ -IPRVadefginprsuv ] [ -m mode ] [ - ] <ファイル> ... <ディレクトリ>
+* Usage: cp [ -IRVadfinpsuv ] [ -m mode ] [ - ] <ファイル1> <ファイル2>
+*        cp -Rr [ -IVadefinpsuv ] [ -m mode ] [ - ] <ディレクトリ1> <ディレクトリ2>
+*        cp [ -IPRVadefinprsuv ] [ -m mode ] [ - ] <ファイル> ... <ディレクトリ>
 
 .include doscall.h
 .include error.h
@@ -94,7 +99,6 @@ FLAG_v		equ	10
 FLAG_x		equ	11
 FLAG_path	equ	12
 FLAG_V		equ	13
-FLAG_g		equ	14
 
 LNDRV_O_CREATE		equ	4*2
 LNDRV_O_OPEN		equ	4*3
@@ -254,10 +258,6 @@ decode_opt_loop2:
 
 		moveq	#FLAG_V,d1
 		cmp.b	#'V',d0
-		beq	set_option
-
-		moveq	#FLAG_g,d1
-		cmp.b	#'g',d0
 		beq	set_option
 
 		cmp.b	#'m',d0
@@ -546,6 +546,7 @@ copy_into_dir_autosize = -destination
 copy_into_dir_0:
 		move.l	#-1,source_mode
 		move.l	#-1,source_time
+		st	do_check_identical
 copy_into_dir_1:
 		link	a6,#destination
 		movem.l	d0-d3/d5/d7/a0-a3,-(a7)
@@ -732,7 +733,9 @@ copy_directory_depth = -4
 copy_directory_tableptr = copy_directory_depth-4
 copy_directory_nentries = copy_directory_tableptr-4
 copy_directory_pathbuf = copy_directory_nentries-((((MAXPATH+1)+1)>>1)<<1)
-copy_directory_autosize = -copy_directory_pathbuf
+copy_directory_check_identical = copy_directory_pathbuf-1
+copy_directory_auto_pad = copy_directory_check_identical-1
+copy_directory_autosize = -copy_directory_auto_pad
 
 copy_file_or_directory_0:
 		move.l	#-1,drive
@@ -743,6 +746,7 @@ copy_file_or_directory_0:
 		*
 		move.l	#-1,source_mode
 		move.l	#-1,source_time
+		st	do_check_identical
 		move.l	d2,-(a7)
 		bsr	open_source
 		move.l	(a7)+,d2
@@ -766,7 +770,7 @@ copy_file_or_directory_1:
 		bra	copy_file
 
 copy_file_or_directory_dir:
-		link	a6,#copy_directory_pathbuf
+		link	a6,#copy_directory_auto_pad
 		movem.l	d4/a4,-(a7)
 		lea	copy_directory_pathbuf(a6),a2
 		bsr	make_dirsearchpath
@@ -778,7 +782,7 @@ copy_file_or_directory_2:
 		tst.l	d1
 		bpl	copy_file
 
-		link	a6,#copy_directory_pathbuf
+		link	a6,#copy_directory_auto_pad
 		movem.l	d4/a4,-(a7)
 		lea	copy_directory_pathbuf(a6),a2
 		bsr	is_directory_2			*  sourceがディレクトリかどうかを調べる
@@ -808,10 +812,12 @@ copy_volumelabel:
 *  ファイルをコピーする
 *
 copy_file:
-		st	source_fatchk_fail
-		btst	#FLAG_g,d5
-		bne	copy_file_x_ok
+		tst.b	do_check_identical
+		bne	copy_file_1
 
+		btst	#FLAG_x,d5
+		beq	copy_file_x_ok
+copy_file_1:
 		lea	fatchkbuf1(pc),a2
 		exg	a1,a2
 		move.l	a0,-(a7)
@@ -965,6 +971,9 @@ check_identical:
 		*  destinationはopenできた．それはブロック・デバイスである．
 		*  source と同一でないかをチェックする．
 		*
+		tst.b	do_check_identical
+		beq	copy_file_not_identical
+
 		tst.b	source_fatchk_fail
 		bne	copy_file_not_identical
 
@@ -1278,28 +1287,60 @@ copy_directory:
 
 		move.l	d2,copy_directory_depth(a6)
 	*
-	*  -x のドライブの設定とチェック
+	*  -x のためのドライブのチェック
 	*
+		sf	d2
 		btst	#FLAG_x,d5
 		beq	do_copy_directory		*  チェック不要
 
 		tst.l	drive
 		bmi	copy_directory_get_drive
 
+		st	d2
 		move.l	a0,-(a7)
 		lea	source_pathname(pc),a0
 		bsr	getdno
 		movea.l	(a7)+,a0
+		move.l	d0,d1
 		bmi	do_copy_directory
 
 		cmp.l	drive,d0
-		bne	copy_directory_done
-		bra	do_copy_directory
+		beq	do_copy_directory
+		bra	copy_directory_done
 
 copy_directory_get_drive:
 		bsr	getdno
 		move.l	d0,drive
 do_copy_directory:
+	*
+	*  内容のそれぞれについて同一性をチェックするべきかどうか
+	*
+		sf	copy_directory_check_identical(a6)
+		exg	a0,a1
+		bsr	getdno
+		exg	a0,a1
+		bmi	do_copy_directory_3		*  dest dir が新規 .. チェック不要
+
+		btst	#FLAG_d,d5
+		beq	do_copy_directory_2		*  リンクの可能性がある .. 要チェック
+
+		exg	d0,d1
+		tst.b	d2
+		bne	do_copy_directory_1
+
+		move.l	a0,-(a7)
+		lea	source_pathname(pc),a0
+		bsr	getdno
+		movea.l	(a7)+,a0
+do_copy_directory_1:
+		tst.l	d0
+		bmi	do_copy_directory_3		*  src dir が fatchk 不可 .. チェック不要
+
+		cmp.l	d0,d1
+		bne	do_copy_directory_3		*  src と dest は別ドライブ .. チェック不要
+do_copy_directory_2:
+		st	copy_directory_check_identical(a6)
+do_copy_directory_3:
 	*
 	*  ソース・ディレクトリ下のファイルを検索する
 	*
@@ -1546,6 +1587,8 @@ copy_directory_contents_loop:
 		move.l	a1,copy_directory_tableptr(a6)
 		movea.l	(a7)+,a1
 		movea.l	a2,a0
+		move.b	copy_directory_check_identical(a6),d0
+		move.b	d0,do_check_identical
 		move.l	copy_directory_depth(a6),d0
 		bsr	copy_into_dir_1
 		bra	copy_directory_contents_loop
@@ -2088,7 +2131,7 @@ perror_2:
 .data
 
 	dc.b	0
-	dc.b	'## cp 1.8 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
+	dc.b	'## cp 1.9 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
 
 .even
 perror_table:
@@ -2161,15 +2204,15 @@ msg_cannot_overwrite_symlink:	dc.b	'シンボリック・リンクには書き込めません',0
 msg_cannot_create_link:		dc.b	'シンボリック・リンクを作成できません; ファイルが存在しています',0
 msg_volume_label_exists:	dc.b	'ボリューム・ラベルをコピーしません; ボリューム・ラベルが存在しています',0
 msg_usage:			dc.b	CR,LF,CR,LF
-	dc.b	'使用法:  cp [-IVadfginpsuv] [-m <属性変更式>] [--] f1 f2',CR,LF
+	dc.b	'使用法:  cp [-IVadfinpsuv] [-m <属性変更式>] [--] f1 f2',CR,LF
 	dc.b	'              f1: コピーするファイルまたは入力デバイス',CR,LF
 	dc.b	'              f2: 複製ファイル名または出力デバイス',CR,LF,CR,LF
 
-	dc.b	'         cp {-R|-r} [-IVadefginpsuvx] [-m <属性変更式>] [--] d1 d2',CR,LF
+	dc.b	'         cp {-R|-r} [-IVadefinpsuvx] [-m <属性変更式>] [--] d1 d2',CR,LF
 	dc.b	'              d1: コピーするディレクトリ',CR,LF
 	dc.b	'              d2: 複製ディレクトリ名（新規）',CR,LF,CR,LF
 
-	dc.b	'         cp [-IPRVadefginprsuvx] [-m <属性変更式>] [--] any ... targetdir',CR,LF
+	dc.b	'         cp [-IPRVadefinprsuvx] [-m <属性変更式>] [--] any ... targetdir',CR,LF
 	dc.b	'              any: コピーするファイルやディレクトリ',CR,LF
 	dc.b	'              targetdir: コピー先ディレクトリ',CR,LF,CR,LF
 
@@ -2201,6 +2244,7 @@ source_pathname:	ds.b	128
 realdest_pathname:	ds.b	128
 pathname_buf:		ds.b	128
 nameck_buffer:		ds.b	91
+do_check_identical:	ds.b	1
 source_fatchk_fail:	ds.b	1
 mode_mask:		ds.b	1
 mode_plus:		ds.b	1

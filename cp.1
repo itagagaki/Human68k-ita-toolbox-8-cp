@@ -9,9 +9,9 @@ CP(1)          Human68k ITA TOOLBOX User's Manual           CP(1)
      cp - ファイルやディレクトリをコピーする
 
 形式
-     cp [ -IRVadefginprsuvx ] [ -m mode ] [ -- ] source dest
+     cp [ -IRVadefinprsuvx ] [ -m mode ] [ -- ] source dest
 
-     cp [ -IPRVadefginprsuvx ] [ -m mode ] [ -- ] source ...
+     cp [ -IPRVadefinprsuvx ] [ -m mode ] [ -- ] source ...
      targetdir
 
 解説
@@ -133,10 +133,6 @@ CP(1)          Human68k ITA TOOLBOX User's Manual           CP(1)
                削除は -u オプションや -i オプションの処理後に行わ
                れます．
 
-     -g        コピー元とコピー先が同一のエントリでないかどうかを
-               チェックしません．同一でないことが明らかである場合
-               にのみ指定してください．処理が幾分高速になります．
-
      -i        コピー先に同名のファイルが存在している場合，上書き
                するかどうかを -I オプションと同様に問い合わせます．
 
@@ -214,14 +210,14 @@ CP(1)          Human68k ITA TOOLBOX User's Manual           CP(1)
      ディレクトリの再帰の回数は64回に制限されています．
 
 バージョン
-     1.8
+     1.9
 
 制作・著作
      Copyright(C)1992-93 by 板垣 史彦 (Itagaki Fumihiko)
 
 
 
-1.8                 Last change: 04 Nov 1993     Itagaki Fumihiko
+1.9                 Last change: 04 Nov 1993     Itagaki Fumihiko
 
 
 
