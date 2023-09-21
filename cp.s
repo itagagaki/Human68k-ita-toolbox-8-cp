@@ -78,7 +78,14 @@
 * Itagaki Fumihiko 01-Apr-94  cp -r B:/ C:. のようなケースで, B:/foo のコピー先が C:.//foo と
 *                             なる('/'が重複する)バグを修正.
 * Itagaki Fumihiko 03-Apr-94  modeの無いファイル(おそらくデバイス)をはねるのをやめた.
-* 2.5
+* 2.5(非公開)
+* Itagaki Fumihiko 08-May-94  ディレクトリの再帰の深さのチェックは, -xのチェック後にする.
+* Itagaki Fumihiko 08-May-94  -Rオプションの意味を変更.
+* Itagaki Fumihiko 08-May-94  -nオプションを指定しても-iオプションなどの確認は行われるようにし
+*                             た.
+* Itagaki Fumihiko 08-May-94  -Vn でもターゲットのボリュームラベルが削除されてしまうバグを修正.
+* Itagaki Fumihiko 08-May-94  -Bオプション, -Cオプションによる切り詰めの方法を変更した.
+* 2.6
 *
 * Usage: cp [ -IRSVadfinpsuv ] [ -m mode ] [ -- ] <ファイル1> <ファイル2>
 *        cp -Rr [ -BCDILUSVadefinpsuv ] [ -m mode ] [ -- ] <ディレクトリ1> <ディレクトリ2>
@@ -96,6 +103,7 @@
 .xref islower
 .xref toupper
 .xref strlen
+.xref strchr
 .xref strcpy
 .xref stpcpy
 .xref strfor1
@@ -125,18 +133,19 @@ FLAG_I		equ	4
 FLAG_n		equ	5
 FLAG_p		equ	6
 FLAG_r		equ	7
-FLAG_s		equ	8
-FLAG_u		equ	9
-FLAG_v		equ	10
-FLAG_x		equ	11
-FLAG_path	equ	12
-FLAG_V		equ	13
-FLAG_B		equ	14
-FLAG_C		equ	15
-FLAG_D		equ	16
-FLAG_L		equ	17
-FLAG_U		equ	18
-FLAG_S		equ	19
+FLAG_R		equ	8
+FLAG_s		equ	9
+FLAG_u		equ	10
+FLAG_v		equ	11
+FLAG_x		equ	12
+FLAG_path	equ	13
+FLAG_V		equ	14
+FLAG_B		equ	15
+FLAG_C		equ	16
+FLAG_D		equ	17
+FLAG_L		equ	18
+FLAG_U		equ	19
+FLAG_S		equ	20
 
 LNDRV_O_CREATE		equ	4*2
 LNDRV_O_OPEN		equ	4*3
@@ -259,6 +268,7 @@ decode_opt_loop2:
 		cmp.b	#'r',d0
 		beq	set_option
 
+		moveq	#FLAG_R,d1
 		cmp.b	#'R',d0
 		beq	set_option
 
@@ -756,53 +766,39 @@ copy_into_dir_makedestname_loop1:
 		movea.l	a0,a5
 		move.l	a3,-(a7)
 		lea	pathname_buf(pc),a3
-		sf	d1
+		moveq	#0,d1
 		movea.l	a0,a1
 		bsr	isrel
-		adda.l	d0,a0
-		bne	makedestname_primary_ok
+		beq	makedestname_not_rel
 
-		bsr	find_dot
-		tst.l	d0
-		beq	makedestname_unadjustable_name
-
-		cmp.l	#8,d0
-		bls	makedestname_primary_ok
-
-		moveq	#8,d0
-		st	d1
-makedestname_primary_ok:
-		exg	a0,a3
-		bsr	memmovi
-		exg	a0,a3
-		tst.b	(a0)+
-		beq	makedestname_check
-
-		bsr	find_dot
-		tst.b	(a0)
-		bne	makedestname_unadjustable_name
-
-		tst.l	d0
-		beq	makedestname_adjust_suffix
-
-		move.b	#'.',(a3)+
-		suba.l	d0,a0
-		cmp.l	#3,d0
-		bls	makedestname_suffix_ok
-
-		moveq	#3,d0
-makedestname_adjust_suffix:
-		st	d1
-makedestname_suffix_ok:
-		movea.l	a0,a1
 		exg	a0,a3
 		bsr	memmovi
 		exg	a0,a3
 		bra	makedestname_check
 
+makedestname_not_rel:
+		moveq	#8,d0
+		bsr	makedestname_sub
+		beq	makedestname_unadjustable_name
+
+		moveq	#'.',d0
+		bsr	strchr
+		beq	makedestname_check
+
+		addq.l	#1,a0
+		move.b	#'.',(a3)+
+		moveq	#3,d0
+		bsr	makedestname_sub
+		bne	makedestname_suffix_ok
+
+		subq.l	#1,a3
+		moveq	#1,d1
+makedestname_suffix_ok:
+		moveq	#'.',d0
+		bsr	strchr
+		beq	makedestname_check
 makedestname_unadjustable_name:
-		st	d1
-		lea	pathname_buf(pc),a3
+		moveq	#-1,d1
 makedestname_check:
 		clr.b	(a3)
 		movea.l	(a7)+,a3
@@ -818,8 +814,8 @@ makedestname_check:
 		btst	#FLAG_C,d5
 		bne	unfit_name
 
-		tst.b	(a1)
-		bne	makedestname_next
+		tst.b	d1
+		bpl	makedestname_next
 unfit_name:
 		movea.l	a5,a0
 		bsr	werror_myname
@@ -1082,6 +1078,45 @@ copy_into_dir_too_long_path:
 		lea	msg_too_long_pathname(pc),a0
 		bsr	werror_myname_and_msg
 		bra	copy_into_dir_done
+****************
+makedestname_sub:
+		movem.l	d2-d3,-(a7)
+		move.w	d0,d2
+		moveq	#0,d3
+makedestname_sub_loop:
+		move.b	(a0)+,d0
+		beq	makedestname_sub_done
+
+		cmp.b	#'.',d0
+		beq	makedestname_sub_done
+
+		subq.w	#1,d2
+		bcs	makedestname_sub_trim
+
+		tst.b	(a0)
+		beq	makedestname_sub_dup1
+
+		bsr	issjis
+		bne	makedestname_sub_dup1
+
+		subq.w	#1,d2
+		bcs	makedestname_sub_trim
+
+		move.b	d0,(a3)+
+		addq.l	#1,d3
+		move.b	(a0)+,d0
+makedestname_sub_dup1:
+		move.b	d0,(a3)+
+		addq.l	#1,d3
+		bra	makedestname_sub_loop
+
+makedestname_sub_trim:
+		moveq	#1,d1
+makedestname_sub_done:
+		subq.l	#1,a0
+		move.l	d3,d0
+		movem.l	(a7)+,d2-d3
+		rts
 *****************************************************************
 * copy_file_or_directory_0, copy_file_or_directory_1
 *
@@ -1109,7 +1144,8 @@ copy_directory_tableptr = copy_directory_depth-4
 copy_directory_nentries = copy_directory_tableptr-4
 copy_directory_pathbuf = copy_directory_nentries-((((MAXPATH+1)+1)>>1)<<1)
 copy_directory_check_identical = copy_directory_pathbuf-1
-copy_directory_auto_pad = copy_directory_check_identical-1
+copy_directory_confirmed = copy_directory_check_identical-1
+copy_directory_auto_pad = copy_directory_confirmed
 copy_directory_autosize = -copy_directory_auto_pad
 
 copy_file_or_directory_0:
@@ -1521,12 +1557,15 @@ create_dest_3:
 		bmi	check_volumelabel_ok
 
 		btst	#FLAG_f,d5
-		bne	remove_volumelabel_loop
+		bne	remove_volumelabel
 
 		movem.l	(a7)+,a0-a1
 		lea	msg_volume_label_exists(pc),a2
 		bra	copy_file_error
 
+remove_volumelabel:
+		btst	#FLAG_n,d5
+		bne	check_volumelabel_ok
 remove_volumelabel_loop:
 		lea	filesbuf+ST_NAME(pc),a1
 		bsr	strcpy
@@ -1641,24 +1680,20 @@ copy_file_perror:
 *  ディレクトリをコピーする
 *
 copy_directory:
-	*
-	*  -r が指定されているなら，再帰的にコピーする
-	*  さもなくばエラー
-	*
-		btst	#FLAG_r,d5
-		beq	cannot_copy_directory
 		*
 		*  A2 : copy_directory_pathbuf : source/*.*
 		*                                       |
 		*                                       A3
 	*
-	*  再帰レベルチェック
+	*  -r -R が指定されているなら，再帰的にコピーする
+	*  さもなくばエラー
 	*
-		addq.l	#1,d7				*  ディレクトリの深さをインクリメント
-		cmp.l	#MAXRECURSE,d7
-		bhi	dir_too_deep
+		btst	#FLAG_r,d5
+		bne	copy_directory_1
 
-		move.l	d7,copy_directory_depth(a6)
+		btst	#FLAG_R,d5
+		beq	cannot_copy_directory
+copy_directory_1:
 	*
 	*  -x のためのドライブのチェック
 	*
@@ -1685,6 +1720,19 @@ copy_directory_get_drive:
 		bsr	getdno
 		move.l	d0,drive
 do_copy_directory:
+		sf	copy_directory_confirmed(a6)
+		btst	#FLAG_R,d5
+		beq	do_copy_directory_0
+
+		movem.l	d5,-(a7)
+		bset	#FLAG_I,d5
+		moveq	#MODEVAL_DIR,d0
+		bsr	confirm_copy
+		movem.l	(a7)+,d5
+		bne	copy_directory_done
+
+		st	copy_directory_confirmed(a6)
+do_copy_directory_0:
 	*
 	*  内容のそれぞれについて，同一性をチェックする必要があるかどうか
 	*
@@ -1714,6 +1762,14 @@ do_copy_directory_1:
 do_copy_directory_2:
 		st	copy_directory_check_identical(a6)
 do_copy_directory_3:
+	*
+	*  再帰レベルチェック
+	*
+		addq.l	#1,d7				*  ディレクトリの深さをインクリメント
+		cmp.l	#MAXRECURSE,d7
+		bhi	dir_too_deep
+
+		move.l	d7,copy_directory_depth(a6)
 	*
 	*  ソース・ディレクトリ下のファイルを検索する
 	*
@@ -1833,14 +1889,6 @@ copy_directory_perror:
 		bsr	perror
 		bra	copy_directory_done
 
-copy_directory_dest_is_dir:
-		exg	a0,a1
-		moveq	#MODEVAL_DIR,d0
-		bsr	confirm_copy
-		exg	a0,a1
-		bne	copy_directory_done
-		bra	copy_directory_attributes
-
 copy_directory_dest_is_nondir:
 		*  real destination が non-directory
 		exg	a0,a1
@@ -1863,12 +1911,20 @@ copy_directory_dest_is_nondir:
 		movea.l	(a7)+,a0
 		bra	copy_directory_do_mkdir_ok
 
+copy_directory_dest_is_dir:
+		moveq	#0,d1
 copy_directory_do_mkdir:
+		tst.b	copy_directory_confirmed(a6)
+		bne	copy_directory_do_mkdir_1
+
 		exg	a0,a1
 		moveq	#MODEVAL_DIR,d0
 		bsr	confirm_copy
 		exg	a0,a1
 		bne	copy_directory_done
+copy_directory_do_mkdir_1:
+		tst.l	d1
+		bpl	copy_directory_attributes
 copy_directory_do_mkdir_ok:
 		move.l	a0,-(a7)
 		lea	realdest_pathname(pc),a0
@@ -2153,9 +2209,6 @@ confirm_I:
 		btst	#FLAG_I,d5
 		beq	confirm_yes
 do_confirm:
-		btst	#FLAG_n,d5
-		bne	confirm_yes
-
 		move.l	a0,-(a7)
 		move.l	d0,-(a7)
 		bsr	werror_myname
@@ -2242,32 +2295,6 @@ isrel:
 		moveq	#2,d0
 isrel_return:
 		tst.l	d0
-		rts
-*****************************************************************
-* find_dot
-*
-* CALL
-*      A0     name
-*
-* RETURN
-*      A0     name に . があるなら，最初の . の位置
-*             name に . が無ければ，最後の \0 の位置
-*
-*      D0.L   name に . があるなら，最初の . の直前までのバイト数
-*             name に . が無ければ，name のバイト数
-*****************************************************************
-find_dot:
-		move.l	a0,-(a7)
-find_dot_loop:
-		move.b	(a0)+,d0
-		beq	find_dot_return
-
-		cmp.b	#'.',d0
-		bne	find_dot_loop
-find_dot_return:
-		subq.l	#1,a0
-		move.l	a0,d0
-		sub.l	(a7)+,d0
 		rts
 *****************************************************************
 getdno:
@@ -2696,7 +2723,7 @@ perror_2:
 .data
 
 	dc.b	0
-	dc.b	'## cp 2.5 ##  Copyright(C)1992-94 by Itagaki Fumihiko',0
+	dc.b	'## cp 2.6 ##  Copyright(C)1992-94 by Itagaki Fumihiko',0
 
 .even
 perror_table:

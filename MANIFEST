@@ -1,0 +1,6 @@
+MANIFEST       このファイル
+README         まず最初にお読み下さい
+NOTICE         版権と許諾についての告示書
+CHANGES        cpのモデルチェンジの履歴
+cp.1           cpのマニュアル
+cp.x           cp実行ファイル
