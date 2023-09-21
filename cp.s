@@ -55,7 +55,10 @@
 * Itagaki Fumihiko 11-Nov-93  ディレクトリをコピーするとき，ディレクトリ内のシンボリック・リン
 *                             クが正しく処理されないバグ（v1.9でのエンバグ）を修正
 * Itagaki Fumihiko 13-Nov-93  -CDLSU オプションの追加
-* 2.0
+* 2.0(非公開)
+* Itagaki Fumihiko 24-Nov-93  ボリューム・ラベルをコピーするとエラーになるバグ（v1.8 でのエンバ
+*                             グ）を修正
+* 2.1
 *
 * Usage: cp [ -IRSVadfinpsuv ] [ -m mode ] [ - ] <ファイル1> <ファイル2>
 *        cp -Rr [ -VDILUSVadefinpsuv ] [ -m mode ] [ - ] <ディレクトリ1> <ディレクトリ2>
@@ -1003,8 +1006,10 @@ copy_file_or_directory_2:
 		bne	copy_file_or_directory_dir
 
 		btst	#MODEBIT_VOL,d0			*  ボリュームラベルか？
-		bne	copy_volumelabel
-		bra	copy_file
+		beq	copy_file
+
+		moveq	#EDIRVOL,d1
+		bra	copy_volumelabel
 
 copy_file_or_directory_dir:
 		link	a6,#copy_directory_auto_pad
@@ -2385,7 +2390,7 @@ perror_2:
 .data
 
 	dc.b	0
-	dc.b	'## cp 2.0 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
+	dc.b	'## cp 2.1 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
 
 .even
 perror_table:
