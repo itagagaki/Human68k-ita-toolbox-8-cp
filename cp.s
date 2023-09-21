@@ -67,6 +67,9 @@
 *                             スタンプがコピーされないバグ（v1.8 でのエンバグ）を修正．
 * Itagaki Fumihiko 27-Nov-93  最適化と高速化．
 * 2.2
+* Itagaki Fumihiko 02-Dec-93  -Cオプションか-Dオプションを指定すると ?: や ?:/ がコピーされない
+*                             バグを修正．
+* 2.3
 *
 * Usage: cp [ -IRSVadfinpsuv ] [ -m mode ] [ - ] <ファイル1> <ファイル2>
 *        cp -Rr [ -VDILUSVadefinpsuv ] [ -m mode ] [ - ] <ディレクトリ1> <ディレクトリ2>
@@ -610,6 +613,8 @@ copy_into_dir_skip_root:
 		bsr	skip_root
 copy_into_dir_2:
 		movea.l	a0,a2
+		tst.b	(a0)
+		beq	check_name_form_ok
 		*
 		*  ここで，
 		*       source:       A:/s1/s2/s3
@@ -2560,7 +2565,7 @@ perror_2:
 .data
 
 	dc.b	0
-	dc.b	'## cp 2.2 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
+	dc.b	'## cp 2.3 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
 
 .even
 perror_table:
