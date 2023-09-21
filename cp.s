@@ -66,18 +66,23 @@
 * Itagaki Fumihiko 27-Nov-93  -pオプションを指定してもディレクトリやボリューム・ラベルのタイム
 *                             スタンプがコピーされないバグ（v1.8 でのエンバグ）を修正．
 * Itagaki Fumihiko 27-Nov-93  最適化と高速化．
-* 2.2
+* 2.2(非公開)
 * Itagaki Fumihiko 02-Dec-93  -Cオプションか-Dオプションを指定すると ?: や ?:/ がコピーされない
 *                             バグを修正．
-* 2.3
+* 2.3(非公開)
 * Itagaki Fumihiko 12-Dec-93  -Cオプションを指定していているとき，調整できない名前のファイルが
 *                             あればエラーとなるようにした．
 * Itagaki Fumihiko 28-Dec-93  -Cオプションは -Bオプションに変更し，新たに -Cオプションを追加
-* 2.4
+* 2.4(非公開)
+* Itagaki Fumihiko 20-Mar-94  不要コードを削除
+* Itagaki Fumihiko 01-Apr-94  cp -r B:/ C:. のようなケースで, B:/foo のコピー先が C:.//foo と
+*                             なる('/'が重複する)バグを修正.
+* Itagaki Fumihiko 03-Apr-94  modeの無いファイル(おそらくデバイス)をはねるのをやめた.
+* 2.5
 *
-* Usage: cp [ -IRSVadfinpsuv ] [ -m mode ] [ - ] <ファイル1> <ファイル2>
-*        cp -Rr [ -BCDILUSVadefinpsuv ] [ -m mode ] [ - ] <ディレクトリ1> <ディレクトリ2>
-*        cp [ -BCDILPRSUVadefinprsuv ] [ -m mode ] [ - ] <ファイル> ... <ディレクトリ>
+* Usage: cp [ -IRSVadfinpsuv ] [ -m mode ] [ -- ] <ファイル1> <ファイル2>
+*        cp -Rr [ -BCDILUSVadefinpsuv ] [ -m mode ] [ -- ] <ディレクトリ1> <ディレクトリ2>
+*        cp [ -BCDILPRSUVadefinprsuv ] [ -m mode ] [ -- ] <ファイル> ... <ディレクトリ>
 
 .include doscall.h
 .include error.h
@@ -593,9 +598,6 @@ cp_error_exit_3:
 *
 * CALL
 *      D0.L   再帰レベル
-*
-* NOTE
-*      source がキャラクタ・デバイスである場合はエラー
 *****************************************************************
 destination = -((((MAXPATH+1)+1)>>1)<<1)
 copy_into_dir_autosize = -destination
@@ -682,6 +684,9 @@ check_name_case_ok:
 		bcs	copy_into_dir_too_long_path
 
 		bsr	stpcpy
+		tst.b	(a2)
+		beq	copy_into_dir_makedestname_1
+
 		exg	a0,a1
 		bsr	skip_root
 		exg	a0,a1
@@ -1007,21 +1012,11 @@ copy_into_dir_check_source:
 		beq	copy_into_dir_done
 
 		move.l	d0,d1				*  D1.L : handle
+		bpl	copy_into_dir_ok
+
 		tst.l	source_mode
-		bpl	copy_into_dir_ok		*  ブロック・デバイス上のエントリ
+		bpl	copy_into_dir_ok
 
-		*  sourceはブロック・デバイス上のエントリではない
-		tst.l	d1				*  handle
-		bmi	copy_into_dir_cannot_open_source
-
-		*  sourceはブロック・デバイス上のエントリではないがopenされた
-		*  -> キャラクタ・デバイス -> エラー
-		bsr	fclose
-		lea	msg_is_device(pc),a2
-		bsr	werror_myname_word_colon_msg
-		bra	copy_into_dir_done
-
-copy_into_dir_cannot_open_source:
 		*  sourceは存在しない．-P ではエラー．
 		btst	#FLAG_path,d5
 		bne	copy_into_dir_perror
@@ -1153,7 +1148,7 @@ copy_file_or_directory_S_ok:
 		cmp.l	#-1,d1
 		bne	copy_file_or_directory_3
 
-		*  sourceはブロック・デバイス上のエントリであり，
+		*  sourceはファイルシステム上のエントリであり，
 		*  source_mode も確定しているが，まだopenしていない．
 		move.l	source_mode,d0
 		btst	#MODEBIT_DIR,d0			*  ディレクトリか？
@@ -1320,7 +1315,7 @@ check_destination:
 		tst.l	realdest_mode
 		bpl	copy_file_check_identical
 		*
-		*  destinationはopenできた．それはキャラクタ・デバイスである．
+		*  destinationはopenできたがmodeが無い.
 		*
 		moveq	#EBADNAME,d0
 		tst.b	intodirflag
@@ -1347,7 +1342,7 @@ check_destination:
 
 copy_file_check_identical:
 	*
-	*  destinationはopenできた．それはブロック・デバイスである．
+	*  destinationはopenできた. modeもある.
 	*  source と同一でないかをチェックする．
 	*
 		tst.b	do_check_identical
@@ -2560,21 +2555,6 @@ malloc:
 		tst.l	d0
 		rts
 *****************************************************************
-is_chrdev:
-		movem.l	d0,-(a7)
-		move.w	d0,-(a7)
-		clr.w	-(a7)
-		DOS	_IOCTRL
-		addq.l	#4,a7
-		tst.l	d0
-		bpl	is_chrdev_1
-
-		moveq	#0,d0
-is_chrdev_1:
-		btst	#7,d0
-		movem.l	(a7)+,d0
-		rts
-*****************************************************************
 make_dirsearchpath:
 		movem.l	a1-a2,-(a7)
 		move.l	a0,-(a7)
@@ -2716,7 +2696,7 @@ perror_2:
 .data
 
 	dc.b	0
-	dc.b	'## cp 2.4 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
+	dc.b	'## cp 2.5 ##  Copyright(C)1992-94 by Itagaki Fumihiko',0
 
 .even
 perror_table:
@@ -2775,7 +2755,6 @@ msg_are_identical:		dc.b	' とは同一のファイルです（コピーしません）',0
 msg_is_directory:		dc.b	'ディレクトリです（コピーしません）',0
 msg_is_volumelabel:		dc.b	'ボリューム・ラベルです（コピーしません）',0
 msg_is_systemfile:		dc.b	'システム・ファイルです（コピーしません）',0
-msg_is_device:			dc.b	'キャラクタ・デバイスです（コピーしません）',0
 msg_unadjustable_name:		dc.b	': 調整できない名前です（コピーしません）',CR,LF,0
 msg_unfitname:			dc.b	': 名前が不適格です',0
 msg_will_ask:			dc.b	'（代わりの名前を尋ねます）',CR,LF,0
