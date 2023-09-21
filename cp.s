@@ -91,11 +91,14 @@
 * Itagaki Fumihiko 02-Oct-94  2044年以降のファイルを-uオプションつきでコピーまたは-pオプション
 *                             つきで上書きコピーできないバグを修正.
 * Itagaki Fumihiko 02-Oct-94  -T オプションを追加.
-* 2.7
+* 2.7(非公開)
+* Itagaki Fumihiko 08-Oct-94  -h オプションを追加.
+* Itagaki Fumihiko 08-Oct-94  -T オプションが効く条件を変更.
+* 2.8
 *
-* Usage: cp [ -IRSTVadfinpsuv ] [ -m mode ] [ -- ] <ファイル1> <ファイル2>
+* Usage: cp [ -IRSTVadfhinpsuv ] [ -m mode ] [ -- ] <ファイル1> <ファイル2>
 *        cp -Rr [ -BCDILUSTVadefinpsuv ] [ -m mode ] [ -- ] <ディレクトリ1> <ディレクトリ2>
-*        cp [ -BCDILPRSTUVadefinprsuv ] [ -m mode ] [ -- ] <ファイル> ... <ディレクトリ>
+*        cp [ -BCDILPRSTUVadefhinprsuv ] [ -m mode ] [ -- ] <ファイル> ... <ディレクトリ>
 
 .include doscall.h
 .include error.h
@@ -115,6 +118,7 @@
 .xref strfor1
 .xref strmove
 .xref memmovi
+.xref memmovd
 .xref headtail
 .xref cat_pathname
 .xref skip_root
@@ -153,6 +157,7 @@ FLAG_L		equ	18
 FLAG_U		equ	19
 FLAG_S		equ	20
 FLAG_T		equ	21
+FLAG_h		equ	22
 
 LNDRV_O_CREATE		equ	4*2
 LNDRV_O_OPEN		equ	4*3
@@ -341,6 +346,10 @@ decode_opt_loop2:
 
 		moveq	#FLAG_T,d1
 		cmp.b	#'T',d0
+		beq	set_option
+
+		moveq	#FLAG_h,d1
+		cmp.b	#'h',d0
 		beq	set_option
 
 		cmp.b	#'m',d0
@@ -619,6 +628,9 @@ cp_error_exit_3:
 *
 * CALL
 *      D0.L   再帰レベル
+*
+* RETURN
+*      A5     破壊
 *****************************************************************
 destination = -((((MAXPATH+1)+1)>>1)<<1)
 copy_into_dir_autosize = -destination
@@ -1147,12 +1159,13 @@ makedestname_sub_done:
 *      D7.L   再帰の深さ
 *
 * RETURN
-*      D0-D3/D7/A0-A3  破壊
+*      D0-D3/D7/A0-A3/A5  破壊
 *      D5.L の FLAG_path bit はクリアされることがある
 *****************************************************************
 copy_directory_depth = -4
 copy_directory_tableptr = copy_directory_depth-4
-copy_directory_nentries = copy_directory_tableptr-4
+copy_directory_tableptr2 = copy_directory_tableptr-4
+copy_directory_nentries = copy_directory_tableptr2-4
 copy_directory_pathbuf = copy_directory_nentries-((((MAXPATH+1)+1)>>1)<<1)
 copy_directory_check_identical = copy_directory_pathbuf-1
 copy_directory_confirmed = copy_directory_check_identical-1
@@ -1642,33 +1655,49 @@ copy_file_contents_done:
 copy_file_done:
 		move.l	d2,d0
 		bsr	fclosex
+
+		sf	d3
 		btst	#FLAG_T,d5
+		bne	copy_file_check_fat
+
+		btst	#FLAG_h,d5
 		beq	copy_file_return_1
 
-		move.l	realdest_mode,d0
+		move.l	source_mode,d0
 		bmi	copy_file_return_1
 
 		btst	#MODEBIT_SYS,d0
 		beq	copy_file_return_1
 
+		st	d3
+copy_file_check_fat:
+		lea	dest_fatchkbuf(pc),a2
 		movem.l	a0-a1,-(a7)
 		lea	realdest_pathname(pc),a0
-		lea	dest_fatchkbuf(pc),a1
+		movea.l	a2,a1
 		bsr	fatchk
 		movem.l	(a7)+,a0-a1
-		bmi	copy_file_return_1
+		bmi	copy_file_not_in_fat
 
 		cmp.l	#14,d0
-		beq	copy_file_return_1
+		beq	copy_file_fat_ok
 
 		move.l	a0,-(a7)
+		bsr	werror_myname
+		lea	msg_file(pc),a0
+		tst.b	d3
+		beq	copy_file_fat_not_straight
+
+		lea	msg_system_file(pc),a0
+copy_file_fat_not_straight:
+		bsr	werror
 		movea.l	a1,a0
-		bsr	werror_myname_and_msg
+		bsr	werror
 		lea	msg_not_straight(pc),a0
 		bsr	werror
 		movea.l	(a7)+,a0
 		bsr	confirm_x
-		bne	copy_file_return_1
+		bne	copy_file_fat_ok
 
 		clr.w	-(a7)
 		clr.l	-(a7)
@@ -1677,6 +1706,69 @@ copy_file_done:
 		addq.l	#8,a7
 		bsr	remove_dest
 		bra	create_dest_5
+
+copy_file_fat_ok:
+		tst.b	d3
+		beq	copy_file_return_1
+
+		lea	pathname_buf(pc),a3
+		move.w	dest_fatchkbuf(pc),d0
+		add.b	#'A'-1,d0
+		move.b	d0,(a3)+
+		move.b	#':',(a3)+
+		move.b	#'/',(a3)+
+		move.l	a1,-(a7)
+		movea.l	a3,a0
+		lea	dos_wildcard_all(pc),a1
+		bsr	strcpy
+		movea.l	(a7)+,a1
+
+		moveq	#31,d3
+		move.w	#MODEVAL_ALL,-(a7)
+		pea	pathname_buf(pc)
+		pea	filesbuf(pc)
+		DOS	_FILES
+		lea	10(a7),a7
+copy_file_check_sys_dirpos:
+		tst.l	d0
+		bmi	copy_file_sys_bad_dirpos
+
+		move.l	a1,-(a7)
+		movea.l	a3,a0
+		lea	filesbuf+ST_NAME(pc),a1
+		bsr	strcpy
+		lea	pathname_buf(pc),a0
+		lea	source_fatchkbuf(pc),a1
+		bsr	fatchk
+		movea.l	a1,a0
+		movea.l	(a7)+,a1
+		bmi	copy_file_check_sys_dirpos_next
+
+		lea	dest_fatchkbuf(pc),a2
+		cmpm.w	(a2)+,(a0)+
+		bne	copy_file_check_sys_dirpos_next
+
+		cmpm.l	(a2)+,(a0)+
+		beq	copy_file_return_1
+copy_file_check_sys_dirpos_next:
+		pea	filesbuf(pc)
+		DOS	_NFILES
+		addq.l	#4,a7
+		dbra	d3,copy_file_check_sys_dirpos
+copy_file_sys_bad_dirpos:
+		movea.l	a1,a0
+		lea	msg_sys_not_in_legal_dir(pc),a2
+		bsr	werror_myname_word_colon_msg
+		bra	copy_file_return_1
+
+copy_file_not_in_fat:
+		tst.b	d3
+		beq	copy_file_return_1
+
+		movea.l	a1,a0
+		lea	msg_sys_not_in_fat(pc),a2
+		bsr	werror_myname_word_colon_msg
+		bra	copy_file_return_1
 
 copy_file_return_0:
 		move.l	d2,d0
@@ -1795,6 +1887,7 @@ do_copy_directory_3:
 	*  ソース・ディレクトリ下のファイルを検索する
 	*
 		move.l	a4,copy_directory_tableptr(a6)
+		move.l	a4,copy_directory_tableptr2(a6)
 		clr.l	copy_directory_nentries(a6)
 		movem.l	a0-a1,-(a7)
 		move.w	#MODEVAL_ALL,-(a7)		*  すべてのエントリを検索する
@@ -1827,25 +1920,42 @@ scan_directory_contents_sys_ok:
 		sub.l	d0,d4
 		bcs	insufficient_memory
 
+		movea.l	a4,a5
+		adda.l	d0,a4
+		btst	#FLAG_h,d5
+		beq	push_directory_contents
+
+		btst.b	#MODEBIT_SYS,filesbuf+ST_MODE(pc)
+		beq	push_directory_contents
+
+		movem.l	d0/a0-a1,-(a7)
+		movea.l	a5,a1
+		movea.l	a4,a0
+		move.l	a5,d0
+		movea.l	copy_directory_tableptr2(a6),a5
+		sub.l	a5,d0
+		bsr	memmovd
+		movem.l	(a7)+,d0/a0-a1
+		add.l	d0,copy_directory_tableptr2(a6)
+push_directory_contents:
 		move.w	filesbuf+ST_DATE(pc),d0
 		ror.w	#8,d0
-		move.b	d0,(a4)+
+		move.b	d0,(a5)+
 		ror.w	#8,d0
-		move.b	d0,(a4)+
+		move.b	d0,(a5)+
 
 		move.w	filesbuf+ST_TIME(pc),d0
 		ror.w	#8,d0
-		move.b	d0,(a4)+
+		move.b	d0,(a5)+
 		ror.w	#8,d0
-		move.b	d0,(a4)+
+		move.b	d0,(a5)+
 
 		move.b	filesbuf+ST_MODE(pc),d0
-		move.b	d0,(a4)+
+		move.b	d0,(a5)+
 
 		movea.l	a0,a1
-		exg	a0,a4
+		movea.l	a5,a0
 		bsr	strmove
-		exg	a0,a4
 		addq.l	#1,copy_directory_nentries(a6)
 scan_directory_contents_continue:
 		pea	filesbuf(pc)
@@ -2724,7 +2834,7 @@ perror_2:
 .data
 
 	dc.b	0
-	dc.b	'## cp 2.7 ##  Copyright(C)1992-94 by Itagaki Fumihiko',0
+	dc.b	'## cp 2.8 ##  Copyright(C)1992-94 by Itagaki Fumihiko',0
 
 .even
 perror_table:
@@ -2794,6 +2904,7 @@ msg_cannot_access_link:		dc.b	'lndrvが組み込まれていないためシンボリック・リンク
 msg_device:			dc.b	'デバイス ',0
 msg_volumelabel:		dc.b	'ボリューム・ラベル ',0
 msg_directory:			dc.b	'ディレクトリ ',0
+msg_system_file:		dc.b	'システム・'
 msg_file:			dc.b	'ファイル ',0
 msg_confirm_overwrite:		dc.b	' に上書きしますか？ ',0
 msg_wo:				dc.b	' を ',0
@@ -2802,9 +2913,11 @@ msg_cannot_overwrite_dir:	dc.b	'ディレクトリには書き込めません',0
 msg_cannot_overwrite_symlink:	dc.b	'シンボリック・リンクには書き込めません',0
 msg_cannot_create_link:		dc.b	'シンボリック・リンクを作成できません; ファイルが存在しています',0
 msg_volume_label_exists:	dc.b	'ボリューム・ラベルをコピーしません; ボリューム・ラベルが存在しています',0
-msg_not_straight:		dc.b	': FATが不連続です. やりなおしますか？ ',0
+msg_not_straight:		dc.b	' のFATが不連続です. やりなおしますか？ ',0
+msg_sys_not_in_fat:		dc.b	'システム・ファイルのコピー先がFAT管理されていません',0
+msg_sys_not_in_legal_dir:	dc.b	'システム・ファイルのコピー先がルート・ディレクトリ先頭32エントリ外です',0
 msg_usage:			dc.b	CR,LF,CR,LF
-	dc.b	'使用法:  cp [-ISTVadfinpsuv] [-m <属性変更式>] [--] f1 f2',CR,LF
+	dc.b	'使用法:  cp [-ISTVadfhinpsuv] [-m <属性変更式>] [--] f1 f2',CR,LF
 	dc.b	'              f1: コピーするファイルまたは入力デバイス',CR,LF
 	dc.b	'              f2: 複製ファイル名または出力デバイス',CR,LF,CR,LF
 
@@ -2812,7 +2925,7 @@ msg_usage:			dc.b	CR,LF,CR,LF
 	dc.b	'              d1: コピーするディレクトリ',CR,LF
 	dc.b	'              d2: 複製ディレクトリ名（新規）',CR,LF,CR,LF
 
-	dc.b	'         cp [-BCDILPRSTUVadefinprsuvx] [-m <属性変更式>] [--] any ... targetdir',CR,LF
+	dc.b	'         cp [-BCDILPRSTUVadefhinprsuvx] [-m <属性変更式>] [--] any ... targetdir',CR,LF
 	dc.b	'              any: コピーするファイルやディレクトリ',CR,LF
 	dc.b	'              targetdir: コピー先ディレクトリ',CR,LF,CR,LF
 
@@ -2853,10 +2966,10 @@ source_fatchk_done:	ds.b	1
 mode_mask:		ds.b	1
 mode_plus:		ds.b	1
 .even
-	ds.b	16384+(copy_into_dir_autosize+4*12+copy_directory_autosize+4*3)*(MAXRECURSE+1)
+	ds.b	16384+(copy_into_dir_autosize+4*12+copy_directory_autosize+4*4)*(MAXRECURSE+1)
 	*  必要なスタック量は，再帰の度に消費されるスタック量とその回数とで決まる．
 	*  4*12 ... copy_into_dir でのセーブレジスタ D0-D3/D5/D7/A0-A3/A6/PC
-	*  4*3 ... copy_directory でのセーブレジスタ A0/A6/PC
+	*  4*4 ... copy_directory でのセーブレジスタ D4/A4/A6/PC
 	*  この他にマージンとスーパーバイザ・スタックとを兼ねて16KB確保しておく．
 .even
 stack_bottom:
