@@ -40,6 +40,9 @@
 *                             は，やはり無限再帰する．
 * Itagaki Fumihiko 20-Feb-93  その他些細だが重要な修正
 * 1.6
+* Itagaki Fumihiko 18-Feb-93  source が symbolic link であるとコピーできないことがあるバグ
+*                             （v1.5 でのエンバグ）を修正
+* 1.7
 *
 * Usage: cp [ -IRVadfinpsuv ] [ -m {[ugoa]{{+-=}[ashrwx]}...}[,...] ] [ - ] <ファイル1> <ファイル2>
 *        cp -Rr [ -IVadefinpsuv ] [ -m {[ugoa]{{+-=}[ashrwx]}...}[,...] ] [ - ] <ディレクトリ1> <ディレクトリ2>
@@ -1650,7 +1653,7 @@ xopen_on_lndrv:
 		bsr	strip_excessive_slashes
 		exg	a0,a1
 		moveq	#-1,d1
-		movem.l	d4-d7/a0-a5,-(a7)
+		movem.l	d1-d2/d4-d7/a0-a5,-(a7)
 		movea.l	LNDRV_O_FILES(a2),a3
 		move.w	#MODEVAL_ALL,-(a7)
 		move.l	a1,-(a7)
@@ -1658,6 +1661,7 @@ xopen_on_lndrv:
 		movea.l	a7,a6
 		jsr	(a3)
 		lea	10(a7),a7
+		movem.l	(a7)+,d1-d2/d4-d7/a0-a5
 		tst.l	d0
 		bmi	xopen_on_lndrv_1
 
@@ -1666,7 +1670,7 @@ xopen_on_lndrv:
 		move.l	filesbuf+ST_TIME(pc),d2
 		swap	d2
 xopen_on_lndrv_1:
-		movem.l	d1-d2,-(a7)
+		movem.l	d1-d2/d4-d7/a0-a5,-(a7)
 		movea.l	lndrv,a2
 		movea.l	LNDRV_O_OPEN(a2),a3
 		clr.w	-(a7)
@@ -1674,8 +1678,7 @@ xopen_on_lndrv_1:
 		movea.l	a7,a6
 		jsr	(a3)
 		addq.l	#6,a7
-		movem.l	(a7)+,d1-d2
-		movem.l	(a7)+,d4-d7/a0-a5
+		movem.l	(a7)+,d1-d2/d4-d7/a0-a5
 		move.l	d0,d3
 xopen_link_done:
 		DOS	_SUPER				*  ユーザ・モードに戻す
@@ -1903,7 +1906,7 @@ perror_2:
 .data
 
 	dc.b	0
-	dc.b	'## cp 1.6 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
+	dc.b	'## cp 1.7 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
 
 .even
 perror_table:
