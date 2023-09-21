@@ -1,6 +1,11 @@
 * cp - copy file
 *
-* Itagaki Fumihiko  5-Jul-92  Create.
+* Itagaki Fumihiko 05-Jul-92  Create.
+* 1.0
+* Itagaki Fumihiko 06-Nov-92  strip_excessive_slashes のバグfixに伴う改版．
+*                             fatchkバグ対策．
+*                             些細なメッセージ変更．
+* 1.2
 *
 * Usage: cp [ -adfinpsuvR ] <ファイル1> <ファイル2>
 *        cp -rR [ -adefinpsuv ] <ディレクトリ1> <ディレクトリ2>
@@ -1521,7 +1526,7 @@ perror_2:
 .data
 
 	dc.b	0
-	dc.b	'## cp 1.1 ##  Copyright(C)1992 by Itagaki Fumihiko',0
+	dc.b	'## cp 1.2 ##  Copyright(C)1992 by Itagaki Fumihiko',0
 
 .even
 perror_table:
@@ -1581,7 +1586,7 @@ msg_is_volumelabel:		dc.b	'ボリューム・ラベルです（コピーしません）',0
 msg_is_device:			dc.b	'キャラクタ・デバイスです（コピーしません）',0
 msg_dont_make_symbolic_link:	dc.b	'相対シンボリック・リンクは‘.’にのみ作成可能です',0
 msg_cannot_access_link:		dc.b	'lndrvが組み込まれていないためシンボリック・リンクの参照ファイルにアクセスできません',0
-msg_confirm:			dc.b	' に上書きしてよろしいですか？',0
+msg_confirm:			dc.b	' に上書きしてよろしいですか？ ',0
 msg_cannot_overwrite_dir:	dc.b	'ディレクトリやボリューム・ラベルには書き込めません',0
 msg_cannot_overwrite_symlink:	dc.b	'シンボリック・リンクには書き込めません',0
 msg_cannot_create_link:		dc.b	'シンボリック・リンクを作成できません: ファイルが存在しています',0
@@ -1609,11 +1614,11 @@ source_mode:		ds.l	1
 realdest_mode:		ds.l	1
 drive:			ds.w	1
 .even
-fatchkbuf0:		ds.b	14
+fatchkbuf0:		ds.b	14+8			* +8 : fatchkバグ対策
 .even
-fatchkbuf1:		ds.b	14
+fatchkbuf1:		ds.b	14+8			* +8 : fatchkバグ対策
 .even
-fatchkbuf2:		ds.b	14
+fatchkbuf2:		ds.b	14+8			* +8 : fatchkバグ対策
 .even
 filesbuf:		ds.b	STATBUFSIZE
 .even
