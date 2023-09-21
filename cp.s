@@ -53,12 +53,20 @@
 *                             ようにした．
 * 1.9(非公開)
 * Itagaki Fumihiko 11-Nov-93  ディレクトリをコピーするとき，ディレクトリ内のシンボリック・リン
-*                             クが正しく処理されないバグ（v1.9でのエンバグ）を修正
+*                             クが正しく処理されないバグ（v1.9 でのエンバグ）を修正
 * Itagaki Fumihiko 13-Nov-93  -CDLSU オプションの追加
 * 2.0(非公開)
 * Itagaki Fumihiko 24-Nov-93  ボリューム・ラベルをコピーするとエラーになるバグ（v1.8 でのエンバ
 *                             グ）を修正
-* 2.1
+* 2.1(非公開)
+* Itagaki Fumihiko 26-Nov-93  -Sオプションを指定すると，システム・ファイルに出会う度にファイ
+*                             ル・ハンドルを消費してしまうバグを修正．
+* Itagaki Fumihiko 26-Nov-93  再帰コピー先がデバイスであるとき（エラー），コピー先のファイル・
+*                             ハンドルを 2度closeしてしまうバグ（実害はない）を修正．
+* Itagaki Fumihiko 27-Nov-93  -pオプションを指定してもディレクトリやボリューム・ラベルのタイム
+*                             スタンプがコピーされないバグ（v1.8 でのエンバグ）を修正．
+* Itagaki Fumihiko 27-Nov-93  最適化と高速化．
+* 2.2
 *
 * Usage: cp [ -IRSVadfinpsuv ] [ -m mode ] [ - ] <ファイル1> <ファイル2>
 *        cp -Rr [ -VDILUSVadefinpsuv ] [ -m mode ] [ - ] <ディレクトリ1> <ディレクトリ2>
@@ -587,7 +595,7 @@ copy_into_dir_0:
 copy_into_dir_1:
 		link	a6,#destination
 		movem.l	d0-d3/d5/d7/a0-a3,-(a7)
-		move.l	d0,d7
+		move.l	d0,d7				*  D7.L : 再帰レベル
 		move.l	a0,copy_into_dir_sourceP
 		btst	#FLAG_path,d5
 		bne	copy_into_dir_skip_root
@@ -849,6 +857,7 @@ copy_into_dir_source_ok:
 		bra	copy_into_dir_ok
 
 copy_into_dir_check_source:
+		move.l	#-1,source_time			*  sourceのタイムスタンプは忘れる
 		bsr	open_source			*  sourceをopenしてみる
 		cmp.l	#-1,d0
 		beq	copy_into_dir_done
@@ -922,8 +931,7 @@ make_path_next:
 copy_into_dir_go:
 		movea.l	copy_into_dir_sourceP,a0
 		lea	destination(a6),a1
-		move.l	d7,d2
-		moveq	#0,d7
+		st	intodirflag
 		bsr	copy_file_or_directory_1
 copy_into_dir_done:
 		movem.l	(a7)+,d0-d3/d5/d7/a0-a3
@@ -951,8 +959,7 @@ copy_into_dir_too_long_path:
 *      source_time がセットされているものとする．
 *
 *      D1.L   sourceのファイル・ハンドル（-1 : 嘘open）
-*      D2.L   再帰の深さ
-*      D7.L   0
+*      D7.L   再帰の深さ
 *
 * RETURN
 *      D0-D3/D7/A0-A3  破壊
@@ -967,9 +974,9 @@ copy_directory_auto_pad = copy_directory_check_identical-1
 copy_directory_autosize = -copy_directory_auto_pad
 
 copy_file_or_directory_0:
+		sf	intodirflag
 		move.l	#-1,drive
-		moveq	#-1,d7
-		moveq	#0,d2
+		moveq	#0,d7
 		*
 		*  sourceをopenしてみる
 		*
@@ -982,25 +989,28 @@ copy_file_or_directory_0:
 
 		move.l	d0,d1				*  D1.L : source のファイル・ハンドル
 copy_file_or_directory_1:
+		*
+		*  -S のチェック
+		*
 		btst	#FLAG_S,d5
-		beq	copy_file_or_directory_2
+		beq	copy_file_or_directory_S_ok
 
 		move.l	source_mode,d0
-		bmi	copy_file_or_directory_2
+		bmi	copy_file_or_directory_S_ok
 
 		btst	#MODEBIT_SYS,d0
-		beq	copy_file_or_directory_2
+		beq	copy_file_or_directory_S_ok
 
+		moveq	#-1,d2
 		lea	msg_is_systemfile(pc),a2
-		bra	werror_myname_word_colon_msg
+		bra	copy_file_error
 
-copy_file_or_directory_2:
+copy_file_or_directory_S_ok:
 		cmp.l	#-1,d1
 		bne	copy_file_or_directory_3
 
 		*  sourceはブロック・デバイス上のエントリであり，
-		*  source_mode と source_time は確定しているが，
-		*  まだopenしていない．
+		*  source_mode も確定しているが，まだopenしていない．
 		move.l	source_mode,d0
 		btst	#MODEBIT_DIR,d0			*  ディレクトリか？
 		bne	copy_file_or_directory_dir
@@ -1025,7 +1035,7 @@ copy_file_or_directory_3:
 		bpl	copy_file
 
 		*  sourceはopenできなかった
-		*  ディレクトリかボリュームラベルか、openエラー
+		*  ディレクトリか，ボリュームラベルか，openエラー
 		link	a6,#copy_directory_auto_pad
 		movem.l	d4/a4,-(a7)
 		lea	copy_directory_pathbuf(a6),a2
@@ -1056,37 +1066,25 @@ copy_volumelabel:
 *  ファイルをコピーする
 *
 copy_file:
-		tst.b	do_check_identical
-		bne	copy_file_1
-
-		btst	#FLAG_x,d5
-		beq	copy_file_x_ok
-copy_file_1:
-		lea	fatchkbuf1(pc),a2
-		exg	a1,a2
-		move.l	a0,-(a7)
-		lea	source_pathname(pc),a0
-		bsr	fatchk
-		movea.l	(a7)+,a0
-		exg	a1,a2
-		smi	source_fatchk_fail
-		bmi	copy_file_x_ok
-
-		move.w	(a2),d3
+		clr.b	source_fatchk_done
 	*
 	*  -x のチェック
 	*
 		btst	#FLAG_x,d5
 		beq	copy_file_x_ok
 
-		move.l	drive,d0
+		move.l	drive,d3
 		bmi	copy_file_x_ok
 
-		cmp.w	d0,d3
+		bsr	fatchk_source
+		bmi	copy_file_x_ok
+
+		move.w	(a2),d0
+		cmp.w	d3,d0
 		bne	copy_file_done
 copy_file_x_ok:
 	*
-	*  -s が有効かどうかを調べる
+	*  -s のチェック
 	*
 		btst	#FLAG_s,d5
 		beq	copy_file_s_ok
@@ -1139,15 +1137,9 @@ copy_file_s_ok:
 		bset	#FLAG_d,d5
 open_destination:
 		moveq	#-1,d1
-		moveq	#-1,d2
-		btst	#FLAG_u,d5
-		bne	open_destination_1
-
-		moveq	#0,d2
-open_destination_1:
+		move.l	d1,realdest_time
 		bsr	xopen
 		move.l	d1,realdest_mode
-		move.l	d2,realdest_time
 		movem.l	(a7)+,d1/d5/a0-a1
 		move.l	d0,d2
 		bpl	check_destination
@@ -1163,16 +1155,15 @@ open_destination_1:
 
 		btst	#FLAG_n,d5
 		beq	copy_file_perror_1
-		*{
-			tst.l	d7
-			bmi	copy_file_perror_1
-			bra	create_dest_with_source_mode
-		*}
+
+		tst.b	intodirflag
+		beq	copy_file_perror_1
+		bra	create_dest_with_source_mode
 
 copy_file_check_dirvol:
 		move.l	realdest_mode,d0
 		btst	#MODEBIT_VOL,d0
-		bne	copy_file_not_identical
+		bne	copy_file_check_identical
 
 		lea	msg_cannot_overwrite_dir(pc),a2
 copy_file_destination_error:
@@ -1183,15 +1174,13 @@ copy_file_error:
 
 check_destination:
 		tst.l	realdest_mode
-		bpl	check_identical
+		bpl	copy_file_check_identical
 		*
 		*  destinationはopenできた．それはキャラクタ・デバイスである．
 		*
-		move.w	d2,d0
-		bsr	fclose
 		moveq	#EBADNAME,d0
-		tst.l	d7
-		bpl	copy_file_perror_1
+		tst.b	intodirflag
+		bne	copy_file_perror_1
 
 		btst	#FLAG_d,d5
 		bne	copy_file_perror_1
@@ -1203,39 +1192,50 @@ check_destination:
 		btst	#FLAG_n,d5
 		bne	copy_file_done
 
-		*  書き込みモードで再オープンする．
+		*  destinationを書き込みモードで再オープンする．
+		move.w	d2,d0				*  destinationを
+		bsr	fclose				*  一旦closeし，
 		move.w	#1,-(a7)			*  書き込みモードで
-		pea	realdest_pathname(pc)		*  再オープンする
-		DOS	_OPEN
+		pea	realdest_pathname(pc)		*  destinationを
+		DOS	_OPEN				*  オープンする
 		addq.l	#6,a7
 		bra	copy_file_contents
 
-check_identical:
-		*
-		*  destinationはopenできた．それはブロック・デバイスである．
-		*  source と同一でないかをチェックする．
-		*
+copy_file_check_identical:
+	*
+	*  destinationはopenできた．それはブロック・デバイスである．
+	*  source と同一でないかをチェックする．
+	*
 		tst.b	do_check_identical
-		beq	copy_file_not_identical
+		beq	copy_file_check_u
 
-		tst.b	source_fatchk_fail
-		bne	copy_file_not_identical
+		*  まずタイムスタンプを調べる．
+		*  これが同一でなければエントリも同一でない筈である．
+		bsr	compare_timestamp
+		bmi	copy_file_perror
+		beq	copy_file_u_ok
 
-		lea	fatchkbuf2(pc),a3
+		cmp.l	d0,d3
+		bne	copy_file_check_u
+
+		*  FATCHKで調べる．
+		bsr	fatchk_source
+		bmi	copy_file_check_u		*  おそらく特殊デバイス
+
+		lea	dest_fatchkbuf(pc),a3
 		exg	a1,a3
 		move.l	a0,-(a7)
 		lea	realdest_pathname(pc),a0
 		bsr	fatchk
 		movea.l	(a7)+,a0
 		exg	a1,a3
-		bmi	copy_file_not_identical		*  おそらく特殊デバイス
+		bmi	copy_file_check_u		*  おそらく特殊デバイス
 
-		lea	fatchkbuf1(pc),a2
 		cmpm.w	(a2)+,(a3)+
-		bne	copy_file_not_identical
+		bne	copy_file_check_u
 
 		cmpm.l	(a2)+,(a3)+
-		bne	copy_file_not_identical
+		bne	copy_file_check_u
 
 		*  They are identical!
 		bsr	werror_myname_and_msg
@@ -1248,21 +1248,20 @@ check_identical:
 		bsr	werror_newline_and_set_error
 		bra	copy_file_done
 
-copy_file_not_identical:
+copy_file_check_u:
+	*
+	*  -u のチェック
+	*
 		btst	#FLAG_u,d5
-		beq	update_ok
+		beq	copy_file_u_ok
 
-		move.l	source_time,d3
-		cmp.l	#-1,d3
-		beq	update_ok
+		bsr	compare_timestamp
+		bmi	copy_file_perror
+		beq	copy_file_u_ok
 
-		move.l	realdest_time,d0
-		cmp.l	#-1,d0
-		beq	update_ok
-
-		cmp.l	d3,d0
+		cmp.l	d0,d3
 		bhs	copy_file_done
-update_ok:
+copy_file_u_ok:
 		moveq	#0,d0
 		bsr	confirm_overwrite
 		bne	copy_file_done
@@ -1419,15 +1418,10 @@ copy_file_contents:
 		move.l	d0,d2
 		bmi	copy_file_perror_1
 	*
-	*  sourceが偽openであればここで本当にopenする
+	*  sourceが未openであればここで本当にopenする
 	*
-		cmp.l	#-1,d1
-		bne	copy_file_source_ok
-
-		bsr	open_source
-		move.l	d0,d1
+		bsr	do_open_source			*  sourceが未openであれば本当にopenする
 		bmi	copy_file_perror
-copy_file_source_ok:
 	*
 	*  ファイルの内容をコピーする
 	*
@@ -1477,8 +1471,7 @@ copy_file_contents_done:
 		btst	#FLAG_p,d5
 		beq	copy_file_date_done
 
-		move.l	source_time,d0
-		cmp.l	#-1,d0
+		bsr	get_source_time
 		beq	copy_file_date_done
 
 		move.l	d0,-(a7)
@@ -1522,11 +1515,11 @@ copy_directory:
 	*
 	*  再帰レベルチェック
 	*
-		addq.l	#1,d2				*  ディレクトリの深さをインクリメント
-		cmp.l	#MAXRECURSE,d2
+		addq.l	#1,d7				*  ディレクトリの深さをインクリメント
+		cmp.l	#MAXRECURSE,d7
 		bhi	dir_too_deep
 
-		move.l	d2,copy_directory_depth(a6)
+		move.l	d7,copy_directory_depth(a6)
 	*
 	*  -x のためのドライブのチェック
 	*
@@ -1554,7 +1547,7 @@ copy_directory_get_drive:
 		move.l	d0,drive
 do_copy_directory:
 	*
-	*  内容のそれぞれについて同一性をチェックするべきかどうか
+	*  内容のそれぞれについて，同一性をチェックする必要があるかどうか
 	*
 		sf	copy_directory_check_identical(a6)
 		exg	a0,a1
@@ -1683,24 +1676,23 @@ copy_directory_dest_is_not_link:
 
 		btst	#FLAG_n,d5
 		beq	copy_directory_do_mkdir
-		*{
-			moveq	#EBADNAME,d0
-			tst.l	d3
-			bpl	copy_directory_perror
 
-			move.l	d3,d0
-			cmp.l	#ENOFILE,d0
-			beq	copy_directory_mkdir_done
+		moveq	#EBADNAME,d0
+		tst.l	d3
+		bpl	copy_directory_perror		*  デバイス..エラー
 
-			cmp.l	#ENODIR,d0
-			bne	copy_directory_perror
+		move.l	d3,d0
+		cmp.l	#ENOFILE,d0
+		beq	copy_directory_mkdir_done	*  存在しない..mkdir
 
-			tst.l	d7
-			bpl	copy_directory_mkdir_done
+		cmp.l	#ENODIR,d0
+		bne	copy_directory_perror		*  パスが存在しない..エラー
+
+		tst.b	intodirflag
+		bne	copy_directory_mkdir_done
 copy_directory_perror:
-			bsr	perror
-			bra	copy_directory_done
-		*}
+		bsr	perror
+		bra	copy_directory_done
 
 copy_directory_dest_is_dir:
 		exg	a0,a1
@@ -1763,10 +1755,11 @@ copy_directory_attributes:
 	*
 	*  タイムスタンプをコピーする
 	*
-		move.l	source_time,d3
-		cmp.l	#-1,d3
+		moveq	#EDIRVOL,d1
+		bsr	get_source_time
 		beq	copy_directory_mode
 
+		move.l	d0,d3
 		lea	realdest_pathname(pc),a0
 		move.w	#MODEVAL_ARC,d0
 		bsr	lchmod
@@ -1783,6 +1776,7 @@ copy_directory_attributes:
 		move.w	d1,-(a7)
 		DOS	_FILEDATE			*  タイムスタンプを設定する
 		addq.l	#6,a7
+			* エラー処理省略 (無視)
 		move.w	d1,d0
 		bsr	fclose
 copy_directory_mode:
@@ -1843,6 +1837,168 @@ copy_directory_done:
 		movem.l	(a7)+,d4/a4
 		unlk	a6
 		rts
+*****************************************************************
+* compare_timestamp - sourceとdestinationのタイムスタンプを得る
+*
+* CALL
+*      D1.L                sourceをopenした結果
+*                          openが成功したならファイル・ハンドル
+*                          失敗したならDOSエラー・コード
+*                          未openならば -1
+*
+*      D2.L                destinationをopenした結果
+*                          openが成功したならファイル・ハンドル
+*                          失敗したならDOSエラー・コード
+*
+*      source_time         sourceのタイムスタンプ
+*      realdest_time       destinationのタイムスタンプ
+*
+*                          不明ならば -1．その場合はここでタイム
+*                          スタンプを取得して帰る．
+*                          そうでなければ，この値がそのまま戻り値
+*                          になる．
+*
+*                          不明ならば -1．その場合はここでタイム
+*                          スタンプを取得して帰る．
+*                          そうでなければ，この値がそのまま戻り値
+*                          になる．
+*
+*      source_pathname     sourceの実体のパス名
+*      realdest_pathname   destinationの実体のパス名
+*
+* RETURN
+*      source_time    sourceのタイムスタンプ
+*                     取得できなかった場合は 0
+*
+*      D0.L           source_time の値
+*                     エラーの場合はDOSエラー・コード
+*
+*      realdest_time  destinationのタイムスタンプ
+*                     取得できなかった場合は 0
+*
+*      D3.L           realdest_time の値
+*
+*      CCR            エラーなら MI
+*                     sourceとdestinationのどちらかのタイムスタン
+*                     プの取得に失敗したなら EQ
+*
+* NOTE
+*      CALL の D1.L が -1 の場合にのみエラーが起こり得る
+*****************************************************************
+compare_timestamp:
+	*
+	*  destinationのタイムスタンプを得る
+	*
+		move.l	realdest_time,d3
+		cmp.l	#-1,d3
+		bne	compare_timestamp_dest_ok	*  realdest_time は確定している
+
+		*  realdest_time は確定していない
+		move.w	d2,d0				*  destinationのopenが成功していれば
+		bpl	compare_timestamp_get_dest	*  ファイル・ハンドルからタイムスタンプを取得する
+
+		*  destinationのopenには失敗している
+		*  （ディレクトリかボリュームラベル）
+		*  FILES でタイムスタンプを得る
+		move.w	#MODEVAL_ALL,-(a7)
+		pea	realdest_pathname(pc)
+		pea	filesbuf(pc)
+		DOS	_FILES
+		lea	10(a7),a7
+		tst.l	d0
+		bmi	compare_timestamp_dest_fail
+
+		move.l	filesbuf+ST_TIME(pc),d0
+		swap	d0
+		bra	compare_timestamp_set_dest
+
+compare_timestamp_dest_fail:
+		moveq	#0,d0
+		bra	compare_timestamp_set_dest
+
+compare_timestamp_get_dest:
+		bsr	get_filedate			*  ファイル・ハンドルからタイムスタンプを取得する
+compare_timestamp_set_dest:
+		move.l	d0,realdest_time
+		move.l	d0,d3
+compare_timestamp_dest_ok:
+		tst.l	d3
+		beq	compare_timestamp_return	*  CCR : EQ
+	*
+	*  sourceのタイムスタンプを得る
+	*
+*bsr	get_source_time
+*rts
+*****************************************************************
+* get_source_time - source のタイムスタンプを得る
+*
+* CALL
+*      D1.L                sourceをopenした結果
+*                          openが成功したならファイル・ハンドル
+*                          失敗したならDOSエラー・コード
+*                          未openならば -1
+*
+*      source_time         sourceのタイムスタンプ
+*                          不明ならば -1．その場合はここでタイム
+*                          スタンプを取得して帰る．
+*                          そうでなければ，この値がそのまま戻り値
+*                          になる．
+*
+*      source_pathname     sourceの実体のパス名
+*
+* RETURN
+*      source_time    sourceのタイムスタンプ
+*                     取得できなかった場合は 0
+*
+*      D0.L           source_time の値
+*                     エラーの場合はDOSエラー・コード
+*
+*      CCR            エラーなら MI
+*                     タイムスタンプが取得できなければ EQ
+*
+* NOTE
+*      CALL の D1.L が -1 の場合にのみエラーが起こり得る
+*****************************************************************
+get_source_time:
+		move.l	source_time,d0
+		cmp.l	#-1,d0
+		bne	get_source_time_2		*  source_time は確定している
+
+		*  source_time は確定していない
+		bsr	do_open_source			*  sourceが未openならばsourceをopenする
+		bmi	get_source_time_return		*  openエラー
+
+		tst.l	d1
+		bmi	get_source_time_3		*  sourceはopenできない..FILES で得る
+
+		move.w	d1,d0				*  sourceのファイル・ハンドルから
+		bsr	get_filedate			*  タイムスタンプを得る
+get_source_time_1:
+		move.l	d0,source_time
+get_source_time_2:
+		tst.l	d0
+get_source_time_return:
+compare_timestamp_return:
+		rts
+
+get_source_time_3:
+		*  sourceはディレクトリかボリューム・ラベル
+		*  FILES でタイムスタンプを得る
+		move.w	#MODEVAL_ALL,-(a7)
+		pea	source_pathname(pc)
+		pea	filesbuf(pc)
+		DOS	_FILES
+		lea	10(a7),a7
+		tst.l	d0
+		bmi	get_source_time_fail
+
+		move.l	filesbuf+ST_TIME(pc),d0
+		swap	d0
+		bra	get_source_time_1
+
+get_source_time_fail:
+		moveq	#0,d0
+		bra	get_source_time_1
 *****************************************************************
 confirm_overwrite:
 		movem.l	a0/a2,-(a7)
@@ -1999,7 +2155,7 @@ getdno_return:
 		rts
 
 getdno_sub:
-		lea	fatchkbuf0(pc),a1
+		lea	tmp_fatchkbuf(pc),a1
 		bsr	fatchk
 		bne	getdno_sub_ok
 
@@ -2009,6 +2165,24 @@ getdno_sub_ok:
 		move.w	(a1),d1
 		subq.w	#1,d1
 		tst.l	d0
+		rts
+*****************************************************************
+fatchk_source:
+		lea	source_fatchkbuf(pc),a2
+		tst.b	source_fatchk_done
+		bne	fatchk_source_return
+
+		move.b	#1,source_fatchk_done
+		exg	a1,a2
+		move.l	a0,-(a7)
+		lea	source_pathname(pc),a0
+		bsr	fatchk
+		movea.l	(a7)+,a0
+		exg	a1,a2
+		bpl	fatchk_source_return
+
+		move.b	#-1,source_fatchk_done
+fatchk_source_return:
 		rts
 *****************************************************************
 fatchk:
@@ -2048,23 +2222,25 @@ unlink:
 		addq.l	#6,a7
 		rts
 *****************************************************************
+do_open_source:
+		cmp.l	#-1,d1
+		bne	do_open_source_return
+
+		bsr	open_source
+		move.l	d0,d1
+		rts
+
+do_open_source_return:
+		cmp.l	d1,d1
+		rts
+*****************************************************************
 open_source:
-		movem.l	d1-d2/a1,-(a7)
+		movem.l	d1/a1,-(a7)
 		lea	source_pathname(pc),a1
 		move.l	source_mode,d1
-		move.l	source_time,d2
-		btst	#FLAG_p,d5
-		bne	open_source_1
-
-		btst	#FLAG_u,d5
-		bne	open_source_1
-
-		moveq	#0,d2
-open_source_1:
 		bsr	xopen
 		move.l	d1,source_mode
-		move.l	d2,source_time
-		movem.l	(a7)+,d1-d2/a1
+		movem.l	(a7)+,d1/a1
 		tst.l	d0
 		rts
 *****************************************************************
@@ -2075,14 +2251,12 @@ open_source_1:
 *      A1     実際にオープンしたファイル（またはデバイス）名を格納するバッファ
 *             （128バイト必要）
 *      D1.L   ファイルのモード．不明ならば -1．
-*      D2.L   ファイルのタイムスタンプ．不明ならば -1．取得しなくていいなら 0．
 *      D5.B   FLAG_dビットが立っていれば、ファイルがシンボリック・リンクであるとき
 *             リンク・ファイル自身をオープンする
 *
 * RETURN
 *      D0.L   オープンしたファイルハンドル．またはDOSエラー・コード
 *      D1.L   実際のファイルのモード．またはDOSエラー・コード
-*      D2.L   （CALL の D2.L が非0のとき）実際のファイルのタイムスタンプ．無ければ -1．
 *****************************************************************
 xopen:
 		movem.l	d4/a2-a3/a6,-(a7)
@@ -2103,11 +2277,6 @@ xopen_1:
 		bne	xopen_link_on_lndrv		*  指定ファイルそのものをopenする
 
 		moveq	#-1,d1				*  modeは忘れる
-		tst.l	d2
-		beq	xopen_2
-
-		moveq	#-1,d2				*  タイムスタンプは忘れる
-xopen_2:
 		moveq	#LNDRV_getrealpath,d0
 		tst.l	lndrv
 		bne	xopen_on_lndrv			*  リンクが参照するファイルをopenする
@@ -2182,29 +2351,6 @@ xopen_normal:
 		DOS	_OPEN
 		addq.l	#6,a7
 xopen_done:
-		tst.l	d0
-		bmi	xopen_done_1
-
-		tst.l	d2
-		beq	xopen_done_1
-
-		cmp.l	#-1,d2
-		bne	xopen_return
-
-		exg	d0,d2
-		clr.l	-(a7)
-		move.w	d2,-(a7)
-		DOS	_FILEDATE			*  タイムスタンプを取得する
-		addq.l	#6,a7
-		exg	d0,d2
-		tst.l	d2
-		beq	xopen_done_1
-
-		cmp.l	#$ffff0000,d2
-		blo	xopen_return
-xopen_done_1:
-		moveq	#-1,d2
-xopen_return:
 		movem.l	(a7)+,d4/a2-a3/a6
 		rts
 *****************************************************************
@@ -2224,6 +2370,30 @@ lchmod:
 		move.l	a0,-(a7)
 		DOS	_CHMOD
 		addq.l	#6,a7
+		tst.l	d0
+		rts
+*****************************************************************
+* get_filedate - ファイル・ハンドルからタイムスタンプを得る
+*
+* CALL
+*      D0.W   ファイル・ハンドル
+*
+* RETURN
+*      D0.L   タイムスタンプ
+*             取得できなければ 0
+*
+*      CCR    TST.L D0
+*****************************************************************
+get_filedate:
+		clr.l	-(a7)
+		move.w	d0,-(a7)
+		DOS	_FILEDATE
+		addq.l	#6,a7
+		cmp.l	#$ffff0000,d0
+		bls	get_filedate_return
+
+		moveq	#0,d0
+get_filedate_return:
 		tst.l	d0
 		rts
 *****************************************************************
@@ -2390,7 +2560,7 @@ perror_2:
 .data
 
 	dc.b	0
-	dc.b	'## cp 2.1 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
+	dc.b	'## cp 2.2 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
 
 .even
 perror_table:
@@ -2493,11 +2663,11 @@ drive:			ds.l	1
 copy_into_dir_sourceP:	ds.l	1
 copy_into_dir_destP:	ds.l	1
 .even
-fatchkbuf0:		ds.b	14+8			* +8 : fatchkバグ対策
+source_fatchkbuf:	ds.b	14+8			* +8 : fatchkバグ対策
 .even
-fatchkbuf1:		ds.b	14+8			* +8 : fatchkバグ対策
+dest_fatchkbuf:		ds.b	14+8			* +8 : fatchkバグ対策
 .even
-fatchkbuf2:		ds.b	14+8			* +8 : fatchkバグ対策
+tmp_fatchkbuf:		ds.b	14+8			* +8 : fatchkバグ対策
 .even
 filesbuf:		ds.b	STATBUFSIZE
 .even
@@ -2506,8 +2676,9 @@ source_pathname:	ds.b	128
 realdest_pathname:	ds.b	128
 pathname_buf:		ds.b	128
 nameck_buffer:		ds.b	91
+intodirflag:		ds.b	1
 do_check_identical:	ds.b	1
-source_fatchk_fail:	ds.b	1
+source_fatchk_done:	ds.b	1
 mode_mask:		ds.b	1
 mode_plus:		ds.b	1
 .even
