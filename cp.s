@@ -70,10 +70,14 @@
 * Itagaki Fumihiko 02-Dec-93  -Cオプションか-Dオプションを指定すると ?: や ?:/ がコピーされない
 *                             バグを修正．
 * 2.3
+* Itagaki Fumihiko 12-Dec-93  -Cオプションを指定していているとき，調整できない名前のファイルが
+*                             あればエラーとなるようにした．
+* Itagaki Fumihiko 28-Dec-93  -Cオプションは -Bオプションに変更し，新たに -Cオプションを追加
+* 2.4
 *
 * Usage: cp [ -IRSVadfinpsuv ] [ -m mode ] [ - ] <ファイル1> <ファイル2>
-*        cp -Rr [ -VDILUSVadefinpsuv ] [ -m mode ] [ - ] <ディレクトリ1> <ディレクトリ2>
-*        cp [ -CDILPRSUVadefinprsuv ] [ -m mode ] [ - ] <ファイル> ... <ディレクトリ>
+*        cp -Rr [ -BCDILUSVadefinpsuv ] [ -m mode ] [ - ] <ディレクトリ1> <ディレクトリ2>
+*        cp [ -BCDILPRSUVadefinprsuv ] [ -m mode ] [ - ] <ファイル> ... <ディレクトリ>
 
 .include doscall.h
 .include error.h
@@ -122,11 +126,12 @@ FLAG_v		equ	10
 FLAG_x		equ	11
 FLAG_path	equ	12
 FLAG_V		equ	13
-FLAG_C		equ	14
-FLAG_D		equ	15
-FLAG_L		equ	16
-FLAG_U		equ	17
-FLAG_S		equ	18
+FLAG_B		equ	14
+FLAG_C		equ	15
+FLAG_D		equ	16
+FLAG_L		equ	17
+FLAG_U		equ	18
+FLAG_S		equ	19
 
 LNDRV_O_CREATE		equ	4*2
 LNDRV_O_OPEN		equ	4*3
@@ -286,6 +291,10 @@ decode_opt_loop2:
 
 		moveq	#FLAG_V,d1
 		cmp.b	#'V',d0
+		beq	set_option
+
+		moveq	#FLAG_B,d1
+		cmp.b	#'B',d0
 		beq	set_option
 
 		moveq	#FLAG_C,d1
@@ -613,8 +622,6 @@ copy_into_dir_skip_root:
 		bsr	skip_root
 copy_into_dir_2:
 		movea.l	a0,a2
-		tst.b	(a0)
-		beq	check_name_form_ok
 		*
 		*  ここで，
 		*       source:       A:/s1/s2/s3
@@ -645,55 +652,6 @@ check_name_case:
 		tst.b	(a0)+
 		bne	check_name_case
 check_name_case_ok:
-	*
-	*  -C オプションまたは -D オプションが指定されているとき，A0以降の名前が
-	*  MS-DOS に適合するかどうかチェックする
-	*
-		btst	#FLAG_C,d5
-		bne	check_name_form
-
-		btst	#FLAG_D,d5
-		beq	check_name_form_ok
-check_name_form:
-		movea.l	a2,a3
-check_name_form_loop:
-		movea.l	a3,a0
-		bsr	find_slashes
-		exg	a0,a3
-		move.b	d0,d3
-		clr.b	(a3)
-		bsr	isrel
-		bne	check_name_form_next
-
-		bsr	find_dot
-		tst.l	d0
-		beq	copy_into_dir_done		*  primaryの長さが 0 .. BAD
-
-		btst	#FLAG_D,d5
-		beq	check_name_form_primary_ok
-
-		cmp.l	#8,d0
-		bhi	copy_into_dir_done
-check_name_form_primary_ok:
-		tst.b	(a0)+
-		beq	check_name_form_next
-
-		bsr	find_dot
-		tst.b	(a0)
-		bne	copy_into_dir_done		*  . が複数ある .. BAD
-
-		btst	#FLAG_D,d5
-		beq	check_name_form_next
-
-		tst.l	d0
-		beq	copy_into_dir_done
-
-		cmp.l	#3,d0
-		bhi	copy_into_dir_done
-check_name_form_next:
-		move.b	d3,(a3)+
-		bne	check_name_form_loop
-check_name_form_ok:
 	*
 	*  destination name を作る
 	*
@@ -746,8 +704,18 @@ copy_into_dir_makedestname_1:
 		*                                 |
 		*                                 A0
 		*
+		tst.b	(a2)
+		beq	copy_into_dir_makedestname_2
+
+		btst	#FLAG_B,d5
+		bne	copy_into_dir_makedestname_3
+
 		btst	#FLAG_C,d5
-		bne	copy_into_dir_makedestname
+		bne	copy_into_dir_makedestname_3
+
+		btst	#FLAG_D,d5
+		bne	copy_into_dir_makedestname_3
+copy_into_dir_makedestname_2:
 		*
 		*  A2以降を destination に追加する
 		*
@@ -761,7 +729,7 @@ copy_into_dir_makedestname_1:
 		bsr	strcpy
 		bra	destname_ok
 
-copy_into_dir_makedestname:
+copy_into_dir_makedestname_3:
 		movea.l	a0,a3
 		*
 		*  ここで，
@@ -774,48 +742,219 @@ copy_into_dir_makedestname:
 		*                                 |
 		*                                 A3
 		*
-copy_into_dir_makedestname_loop:
+copy_into_dir_makedestname_loop1:
 		movea.l	a2,a0
 		bsr	find_slashes
 		exg	a0,a2
 		move.b	d0,d3
 		clr.b	(a2)
+		movea.l	a0,a5
+		move.l	a3,-(a7)
+		lea	pathname_buf(pc),a3
+		sf	d1
 		movea.l	a0,a1
 		bsr	isrel
 		adda.l	d0,a0
 		bne	makedestname_primary_ok
 
 		bsr	find_dot
+		tst.l	d0
+		beq	makedestname_unadjustable_name
+
 		cmp.l	#8,d0
 		bls	makedestname_primary_ok
 
 		moveq	#8,d0
+		st	d1
 makedestname_primary_ok:
-		sub.l	d0,d2
-		bcs	copy_into_dir_too_long_path
-
 		exg	a0,a3
 		bsr	memmovi
 		exg	a0,a3
-		bsr	strlen
-		cmp.l	#1,d0
-		bls	makedestname_next
+		tst.b	(a0)+
+		beq	makedestname_check
 
-		cmp.l	#4,d0
+		bsr	find_dot
+		tst.b	(a0)
+		bne	makedestname_unadjustable_name
+
+		tst.l	d0
+		beq	makedestname_adjust_suffix
+
+		move.b	#'.',(a3)+
+		suba.l	d0,a0
+		cmp.l	#3,d0
 		bls	makedestname_suffix_ok
 
-		moveq	#4,d0
+		moveq	#3,d0
+makedestname_adjust_suffix:
+		st	d1
 makedestname_suffix_ok:
-		sub.l	d0,d2
-		bcs	copy_into_dir_too_long_path
-
 		movea.l	a0,a1
 		exg	a0,a3
 		bsr	memmovi
 		exg	a0,a3
+		bra	makedestname_check
+
+makedestname_unadjustable_name:
+		st	d1
+		lea	pathname_buf(pc),a3
+makedestname_check:
+		clr.b	(a3)
+		movea.l	(a7)+,a3
+		lea	pathname_buf(pc),a1
+		tst.b	d1
+		beq	makedestname_next
+
+		*  unfit name
+
+		btst	#FLAG_D,d5
+		bne	copy_into_dir_done
+
+		btst	#FLAG_C,d5
+		bne	unfit_name
+
+		tst.b	(a1)
+		bne	makedestname_next
+unfit_name:
+		movea.l	a5,a0
+		bsr	werror_myname
+		movea.l	copy_into_dir_sourceP,a0
+		move.b	d3,(a2)
+		bsr	werror
+		clr.b	(a2)
+		lea	msg_colon(pc),a0
+		bsr	werror
+ask_destname_1:
+		movea.l	a5,a0
+		bsr	werror
+		btst	#FLAG_C,d5
+		bne	ask_destname_2
+
+		lea	msg_unadjustable_name(pc),a0
+		bsr	werror
+		bra	copy_into_dir_done
+
+ask_destname_2:
+		lea	msg_unfitname(pc),a0
+		bsr	werror
+		btst	#FLAG_n,d5
+		beq	ask_destname_3
+
+		lea	msg_will_ask(pc),a0
+		bsr	werror
+		movea.l	a5,a1
+		bra	makedestname_next
+
+ask_destname_3:
+		bsr	werror_newline
+ask_destname_4:
+		lea	msg_destname(pc),a0
+		bsr	werror
+		tst.b	(a1)
+		beq	ask_destname_5
+
+		lea	msg_destname_1(pc),a0
+		bsr	werror
+		movea.l	a1,a0
+		bsr	werror
+ask_destname_5:
+		lea	msg_destname_2(pc),a0
+		bsr	werror
+		lea	getsbuf(pc),a0
+		move.b	#12,(a0)
+		move.l	a0,-(a7)
+		DOS	_GETS
+		addq.l	#4,a7
+		bsr	werror_newline
+		moveq	#0,d0
+		move.b	1(a0),d0
+		bne	check_answered_destname
+
+		tst.b	(a1)
+		beq	ask_destname_4
+		bra	makedestname_next
+
+check_answered_destname:
+		addq.l	#2,a0
+		clr.b	(a0,d0.l)
+		cmpi.b	#'.',(a0)
+		beq	copy_into_dir_done
+
+		movea.l	a0,a5
+		sf	d1
+check_answered_destname_loop:
+		move.b	(a0)+,d0
+		beq	check_answered_destname_done
+
+		cmp.b	#'.',d0
+		beq	check_answered_destname_dot
+
+		cmp.b	#'?',d0
+		beq	ask_destname_1
+
+		cmp.b	#'*',d0
+		beq	ask_destname_1
+
+		cmp.b	#'<',d0
+		beq	ask_destname_1
+
+		cmp.b	#'>',d0
+		beq	ask_destname_1
+
+		cmp.b	#':',d0
+		beq	ask_destname_1
+
+		cmp.b	#'/',d0
+		beq	ask_destname_1
+
+		cmp.b	#'\',d0
+		beq	ask_destname_1
+
+		bsr	issjis
+		bne	check_answered_destname_loop
+
+		tst.b	(a0)+
+		beq	check_answered_destname_done
+		bra	check_answered_destname_loop
+
+check_answered_destname_dot:
+		tst.b	d1
+		bne	ask_destname_1
+
+		bsr	strlen
+		subq.l	#3,d0
+		bhi	ask_destname_1
+
+		st	d1
+		bra	check_answered_destname_1
+
+check_answered_destname_done:
+		tst.b	d1
+		bne	answered_destname_ok
+check_answered_destname_1:
+		move.l	a0,d0
+		subq.l	#1,d0
+		sub.l	a5,d0
+		beq	ask_destname_1
+
+		subq.l	#8,d0
+		bhi	ask_destname_1
+
+		tst.b	d1
+		bne	check_answered_destname_loop
+answered_destname_ok:
+		movea.l	a5,a1
 makedestname_next:
+		movea.l	a1,a0
+		bsr	strlen
+		sub.l	d0,d2
+		bcs	copy_into_dir_too_long_path
+
+		exg	a0,a3
+		bsr	memmovi
+		exg	a0,a3
 		move.b	d3,(a2)+
-		bne	copy_into_dir_makedestname_loop
+		bne	copy_into_dir_makedestname_loop1
 
 		clr.b	(a3)
 destname_ok:
@@ -2110,6 +2249,18 @@ isrel_return:
 		tst.l	d0
 		rts
 *****************************************************************
+* find_dot
+*
+* CALL
+*      A0     name
+*
+* RETURN
+*      A0     name に . があるなら，最初の . の位置
+*             name に . が無ければ，最後の \0 の位置
+*
+*      D0.L   name に . があるなら，最初の . の直前までのバイト数
+*             name に . が無ければ，name のバイト数
+*****************************************************************
 find_dot:
 		move.l	a0,-(a7)
 find_dot_loop:
@@ -2565,7 +2716,7 @@ perror_2:
 .data
 
 	dc.b	0
-	dc.b	'## cp 2.3 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
+	dc.b	'## cp 2.4 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
 
 .even
 perror_table:
@@ -2623,8 +2774,14 @@ msg_and:			dc.b	' と ',0
 msg_are_identical:		dc.b	' とは同一のファイルです（コピーしません）',0
 msg_is_directory:		dc.b	'ディレクトリです（コピーしません）',0
 msg_is_volumelabel:		dc.b	'ボリューム・ラベルです（コピーしません）',0
-msg_is_systemfile:			dc.b	'システム・ファイルです（コピーしません）',0
+msg_is_systemfile:		dc.b	'システム・ファイルです（コピーしません）',0
 msg_is_device:			dc.b	'キャラクタ・デバイスです（コピーしません）',0
+msg_unadjustable_name:		dc.b	': 調整できない名前です（コピーしません）',CR,LF,0
+msg_unfitname:			dc.b	': 名前が不適格です',0
+msg_will_ask:			dc.b	'（代わりの名前を尋ねます）',CR,LF,0
+msg_destname:			dc.b	'代わりの名前（[.]:コピーしない',0
+msg_destname_1:			dc.b	'; [CR]:',0
+msg_destname_2:			dc.b	'）: ',0
 msg_dont_make_symbolic_link:	dc.b	'相対シンボリック・リンクは‘.’にのみ作成可能です',0
 msg_cannot_access_link:		dc.b	'lndrvが組み込まれていないためシンボリック・リンクの参照ファイルにアクセスできません',0
 msg_device:			dc.b	'デバイス ',0
@@ -2643,11 +2800,11 @@ msg_usage:			dc.b	CR,LF,CR,LF
 	dc.b	'              f1: コピーするファイルまたは入力デバイス',CR,LF
 	dc.b	'              f2: 複製ファイル名または出力デバイス',CR,LF,CR,LF
 
-	dc.b	'         cp {-R|-r} [-CDILUSVadefinpsuvx] [-m <属性変更式>] [--] d1 d2',CR,LF
+	dc.b	'         cp {-R|-r} [-BCDILUSVadefinpsuvx] [-m <属性変更式>] [--] d1 d2',CR,LF
 	dc.b	'              d1: コピーするディレクトリ',CR,LF
 	dc.b	'              d2: 複製ディレクトリ名（新規）',CR,LF,CR,LF
 
-	dc.b	'         cp [-CDILPRSUVadefinprsuvx] [-m <属性変更式>] [--] any ... targetdir',CR,LF
+	dc.b	'         cp [-BCDILPRSUVadefinprsuvx] [-m <属性変更式>] [--] any ... targetdir',CR,LF
 	dc.b	'              any: コピーするファイルやディレクトリ',CR,LF
 	dc.b	'              targetdir: コピー先ディレクトリ',CR,LF,CR,LF
 
@@ -2656,6 +2813,7 @@ msg_newline:		dc.b	CR,LF,0
 msg_arrow:		dc.b	' -> ',0
 msg_mkdir:		dc.b	'mkdir ',0
 dos_wildcard_all:	dc.b	'*.*',0
+str_question:		dc.b	'?',0
 *****************************************************************
 .bss
 

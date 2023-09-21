@@ -11,7 +11,7 @@ CP(1)          Human68k ITA TOOLBOX User's Manual           CP(1)
 形式
      cp [ -IRSVadefinprsuvx ] [ -m mode ] [ -- ] source dest
 
-     cp [ -CDILPRSUVadefinprsuvx ] [ -m mode ] [ -- ] source ...
+     cp [ -BCDILPRSUVadefinprsuvx ] [ -m mode ] [ -- ] source ...
      targetdir
 
 解説
@@ -83,16 +83,22 @@ CP(1)          Human68k ITA TOOLBOX User's Manual           CP(1)
 
      cp には 次のオプションがあります．
 
-     -C        ファイルやディレクトリを元の名前のままコピーする場
+     -B        ファイルやディレクトリを元の名前のままコピーする場
                合において，コピー先の名前をMS-DOSのディレクトリに
-               納まるよう切り詰めます．ただし . を 2個以上含む名
-               前や . で始まる名前のファイルやディレクトリはコピー
-               しません．
+               納まるよう調整します．ただし . を 2個以上含む名前
+               や . で始まる名前のファイルやディレクトリはエラー
+               とし，コピーしません．
+
+     -C        ファイルやディレクトリを元の名前のままコピーする場
+               合において，その名前がMS-DOSのディレクトリに納まら
+               ない場合，代わりの名前を問い合わせます．このオプショ
+               ンは -B オプションを覆います．
 
      -D        ファイルやディレクトリを元の名前のままコピーする場
                合において，MS-DOSのディレクトリに納まらない名前の
-               ファイルやディレクトリをコピーしません．このオプショ
-               ンは -C オプションを覆います．
+               ファイルやディレクトリをコピーせず無視します．この
+               オプションは -B オプションと -C オプションを覆いま
+               す．
 
      -I        ファイルやディレクトリ毎に問い合わせを行います．問
                い合わせに対して‘y’で始まる行を入力すると通常ど
@@ -201,8 +207,8 @@ CP(1)          Human68k ITA TOOLBOX User's Manual           CP(1)
                     この機能は ITA TOOLBOX の chmod(1) に準じます．
                mode の書式は ITA TOOLBOX の chmod(1) と同じです．
 
-     -m オプションを複数指定した場合には，最後の指定のみが有効と
-     なります．
+               -m オプションを複数指定した場合には，最後の指定の
+               みが有効となります．
 
 関連事項
      ln(1), mv(1), rm(1), mkdir(1), chmod(1)
@@ -230,14 +236,14 @@ CP(1)          Human68k ITA TOOLBOX User's Manual           CP(1)
      ディレクトリの再帰の回数は64回に制限されています．
 
 バージョン
-     2.3
+     2.4
 
 制作・著作
      Copyright(C)1992-93 by 板垣 史彦 (Itagaki Fumihiko)
 
 
 
-2.3                 Last change: 02 Dec 1993     Itagaki Fumihiko
+2.4                 Last change: 28 Dec 1993     Itagaki Fumihiko
 
 
 
