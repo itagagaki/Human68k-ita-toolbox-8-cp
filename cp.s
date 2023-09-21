@@ -6,10 +6,21 @@
 *                             fatchkバグ対策．
 *                             些細なメッセージ変更．
 * 1.2
+* Itagaki Fumihiko 27-Dec-92  -I オプションの追加．
+* Itagaki Fumihiko 28-Dec-92  プロテクトされたメディアから cp -rp でディレクトリをコピー
+*                             できなかった不具合を修正．
+* Itagaki Fumihiko 28-Dec-92  -x が正しく働いていなかったバグを修正．
+* 1.3
+* Itagaki Fumihiko 10-Jan-93  GETPDB -> lea $10(a0),a0
+* Itagaki Fumihiko 20-Jan-93  引数 - と -- の扱いの変更
+* Itagaki Fumihiko 22-Jan-93  スタックを拡張
+* Itagaki Fumihiko 24-Jan-93  FATCHK のエラー EBADPARAM を無視することを忘れていたのを修正；
+*                             -x が正しく働かない可能性があった．
+* 1.4
 *
-* Usage: cp [ -adfinpsuvR ] <ファイル1> <ファイル2>
-*        cp -rR [ -adefinpsuv ] <ディレクトリ1> <ディレクトリ2>
-*        cp [ -adefinprsuvPR ] <ファイル> ... <ディレクトリ>
+* Usage: cp [ -Radfinpsuv ] [ -m {[ugoa]{{+-=}[ashrwx]}...}[,...] ] [ - ] <ファイル1> <ファイル2>
+*        cp -Rr [ -adefinpsuv ] [ -m {[ugoa]{{+-=}[ashrwx]}...}[,...] ] [ - ] <ディレクトリ1> <ディレクトリ2>
+*        cp [ -PRadefinprsuv ] [ -m {[ugoa]{{+-=}[ashrwx]}...}[,...] ] [ - ] <ファイル> ... <ディレクトリ>
 
 .include doscall.h
 .include error.h
@@ -26,7 +37,6 @@
 .xref headtail
 .xref cat_pathname
 .xref strip_excessive_slashes
-.xref tfopen
 .xref fclose
 
 REQUIRED_OSVER	equ	$200			*  2.00以降
@@ -43,14 +53,15 @@ FLAG_d		equ	0
 FLAG_e		equ	1
 FLAG_f		equ	2
 FLAG_i		equ	3
-FLAG_n		equ	4
-FLAG_p		equ	5
-FLAG_r		equ	6
-FLAG_s		equ	7
-FLAG_u		equ	8
-FLAG_v		equ	9
-FLAG_x		equ	10
-FLAG_path	equ	11
+FLAG_I		equ	4
+FLAG_n		equ	5
+FLAG_p		equ	6
+FLAG_r		equ	7
+FLAG_s		equ	8
+FLAG_u		equ	9
+FLAG_v		equ	10
+FLAG_x		equ	11
+FLAG_path	equ	12
 
 LNDRV_O_CREATE		equ	4*2
 LNDRV_O_OPEN		equ	4*3
@@ -79,8 +90,7 @@ start1:
 		cmp.w	#REQUIRED_OSVER,d0
 		bcs	dos_version_mismatch
 
-		DOS	_GETPDB
-		movea.l	d0,a0				*  A0 : PDBアドレス
+		lea	$10(a0),a0			*  A0 : PDBアドレス
 		move.l	a7,d0
 		sub.l	a0,d0
 		move.l	d0,-(a7)
@@ -122,6 +132,8 @@ start1:
 		bsr	DecodeHUPAIR			*  引数をデコードする
 		movea.l	a1,a0				*  A0 : 引数ポインタ
 		move.l	d0,d7				*  D7.L : 引数カウンタ
+		move.b	#$ff,mode_mask
+		clr.b	mode_plus
 		moveq	#0,d5				*  D5.L : フラグ
 decode_opt_loop1:
 		tst.l	d7
@@ -130,10 +142,19 @@ decode_opt_loop1:
 		cmpi.b	#'-',(a0)
 		bne	decode_opt_done
 
+		tst.b	1(a0)
+		beq	decode_opt_done
+
 		subq.l	#1,d7
 		addq.l	#1,a0
 		move.b	(a0)+,d0
+		cmp.b	#'-',d0
+		bne	decode_opt_loop2
+
+		tst.b	(a0)+
 		beq	decode_opt_done
+
+		subq.l	#1,a0
 decode_opt_loop2:
 		cmp.b	#'a',d0
 		beq	set_option_a
@@ -144,6 +165,10 @@ decode_opt_loop2:
 
 		moveq	#FLAG_i,d1
 		cmp.b	#'i',d0
+		beq	set_option
+
+		moveq	#FLAG_I,d1
+		cmp.b	#'I',d0
 		beq	set_option
 
 		moveq	#FLAG_p,d1
@@ -189,6 +214,9 @@ decode_opt_loop2:
 		cmp.b	#'P',d0
 		beq	set_option
 
+		cmp.b	#'m',d0
+		beq	decode_mode
+
 		moveq	#1,d1
 		tst.b	(a0)
 		beq	bad_option_1
@@ -219,6 +247,99 @@ set_option_done:
 		move.b	(a0)+,d0
 		bne	decode_opt_loop2
 		bra	decode_opt_loop1
+
+decode_mode:
+		tst.b	(a0)+
+		bne	bad_arg
+
+		subq.l	#1,d7
+		bcs	too_few_args
+
+		move.b	#$ff,mode_mask
+		clr.b	mode_plus
+decode_mode_loop1:
+		move.b	(a0)+,d0
+		beq	decode_opt_loop1
+
+		cmp.b	#',',d0
+		beq	decode_mode_loop1
+
+		subq.l	#1,a0
+decode_mode_loop2:
+		move.b	(a0)+,d0
+		cmp.b	#'u',d0
+		beq	decode_mode_loop2
+
+		cmp.b	#'g',d0
+		beq	decode_mode_loop2
+
+		cmp.b	#'o',d0
+		beq	decode_mode_loop2
+
+		cmp.b	#'a',d0
+		beq	decode_mode_loop2
+decode_mode_loop3:
+		cmp.b	#'+',d0
+		beq	decode_mode_plus
+
+		cmp.b	#'-',d0
+		beq	decode_mode_minus
+
+		cmp.b	#'=',d0
+		bne	bad_arg
+
+		move.b	#(MODEVAL_VOL|MODEVAL_DIR|MODEVAL_LNK),mode_mask
+		clr.b	mode_plus
+decode_mode_plus:
+		bsr	decode_mode_sub
+		or.b	d1,mode_plus
+		bra	decode_mode_continue
+
+decode_mode_minus:
+		bsr	decode_mode_sub
+		not.b	d1
+		and.b	d1,mode_mask
+		and.b	d1,mode_plus
+decode_mode_continue:
+		tst.b	d0
+		beq	decode_opt_loop1
+
+		cmp.b	#',',d0
+		beq	decode_mode_loop1
+		bra	decode_mode_loop3
+
+decode_mode_sub:
+		moveq	#0,d1
+decode_mode_sub_loop:
+		move.b	(a0)+,d0
+		moveq	#MODEBIT_ARC,d2
+		cmp.b	#'a',d0
+		beq	decode_mode_sub_set
+
+		moveq	#MODEBIT_SYS,d2
+		cmp.b	#'s',d0
+		beq	decode_mode_sub_set
+
+		moveq	#MODEBIT_HID,d2
+		cmp.b	#'h',d0
+		beq	decode_mode_sub_set
+
+		cmp.b	#'r',d0
+		beq	decode_mode_sub_loop
+
+		moveq	#MODEBIT_RDO,d2
+		cmp.b	#'w',d0
+		beq	decode_mode_sub_set
+
+		moveq	#MODEBIT_EXE,d2
+		cmp.b	#'x',d0
+		beq	decode_mode_sub_set
+
+		rts
+
+decode_mode_sub_set:
+		bset	d2,d1
+		bra	decode_mode_sub_loop
 
 decode_opt_done:
 		subq.l	#2,d7
@@ -288,8 +409,13 @@ cp_error_exit:
 		bsr	werror_myname_word_colon_msg
 		bra	exit_program
 
+bad_arg:
+		lea	msg_bad_arg(pc),a0
+		bra	arg_error
+
 too_few_args:
 		lea	msg_too_few_args(pc),a0
+arg_error:
 		bsr	werror_myname_and_msg
 usage:
 		lea	msg_usage(pc),a0
@@ -553,20 +679,19 @@ copy_directory:
 		tst.l	drive
 		bmi	copy_directory_get_drive
 
-		bsr	lgetmode
-		bmi	copy_directory_drive_ok
-
 		move.l	a0,-(a7)
 		lea	source_pathname(pc),a0
 		bsr	getdno
 		movea.l	(a7)+,a0
+		bmi	copy_directory_drive_ok
+
 		cmp.l	drive,d0
 		bne	copy_directory_done
 		bra	copy_directory_drive_ok
 
 copy_directory_get_drive:
-		move.l	#-2,drive
-		bsr	get_drive
+		bsr	getdno
+		move.l	d0,drive
 copy_directory_drive_ok:
 	*
 	*  destinationをチェックする
@@ -594,7 +719,7 @@ copy_directory_check_dest:
 copy_directory_dest_is_not_link:
 		bsr	is_directory
 		bmi	copy_directory_done		*  エラー
-		bne	copy_directory_attributes	*  ディレクトリかまたは
+		bne	copy_directory_dest_is_dir	*  ディレクトリかまたは
 							*  ディレクトリへのシンボリック・リンク
 		*  destinationはディレクトリではない
 
@@ -626,10 +751,17 @@ copy_directory_perror:
 			bra	copy_directory_done
 		*}
 
+copy_directory_dest_is_dir:
+		exg	a0,a1
+		bsr	confirm_copy
+		exg	a0,a1
+		bne	copy_directory_done
+		bra	copy_directory_attributes
+
 copy_directory_dest_is_nondir:
 		*  real destination が non-directory
 		exg	a0,a1
-		bsr	confirm
+		bsr	confirm_overwrite
 		exg	a0,a1
 		bne	copy_directory_done
 
@@ -645,7 +777,14 @@ copy_directory_dest_is_nondir:
 		lea	realdest_pathname(pc),a0
 		bsr	unlink
 		movea.l	(a7)+,a0
+		bra	copy_directory_do_mkdir_ok
+
 copy_directory_do_mkdir:
+		exg	a0,a1
+		bsr	confirm_copy
+		exg	a0,a1
+		bne	copy_directory_done
+copy_directory_do_mkdir_ok:
 		move.l	a0,-(a7)
 		lea	realdest_pathname(pc),a0
 		bsr	do_mkdir
@@ -662,80 +801,53 @@ copy_directory_attributes:
 		btst	#FLAG_n,d5
 		bne	copy_directory_contents
 
-		tst.l	d1				*  real destination は
-		bmi	copy_directory_contents		*  実際のサブ・ディレクトリでない
+		btst	#31,d5				*  destination がもともと存在していた
+		beq	copy_directory_contents		*  場合には、その時刻と属性は保存する
 	*
 	*  sourceの属性を得る
 	*
-		bsr	lgetmode
+		move.w	#MODEVAL_ALL,-(a7)
+		move.l	a0,-(a7)
+		pea	copy_directory_filesbuf(a6)
+		DOS	_FILES
+		lea	10(a7),a7
+		tst.l	d0
 		bmi	copy_directory_attributes_done
 
-		btst	#MODEBIT_LNK,d0
-		beq	copy_directory_source_mode_ok
-
-		lea	source_pathname(pc),a0
-		bsr	lgetmode
-		bmi	copy_directory_attributes_done
-copy_directory_source_mode_ok:
-		move.w	d0,d2				*  D2.W : sourceの属性
 		btst	#FLAG_p,d5
-		beq	skip_copy_directory_date
+		beq	copy_directory_mode
 	*
 	*  タイムスタンプをコピーする
 	*
-		bclr	#MODEBIT_DIR,d0
-		bclr	#MODEBIT_VOL,d0
-		bset	#MODEBIT_ARC,d0
-		bsr	lchmod
-		bmi	copy_directory_attributes_done
-
-		moveq	#0,d0
-		bsr	tfopen
-		move.l	d0,d1
-		bmi	copy_directory_open_source_fail
-
-		move.l	d1,d0
-		bsr	fgetdate
-		exg	d0,d1
-		bsr	fclose
-			* エラー処理省略 (無視)
-		exg	d0,d1
-copy_directory_open_source_fail:
-		move.l	d0,d3				*  D3.L : sourceのタイムスタンプ
-		move.w	d2,d0
-		bsr	lchmod
-			* エラー処理省略 (無視)
-		cmp.l	#$ffff0000,d3
-		bcc	copy_directory_mode
-
 		lea	realdest_pathname(pc),a0
 		move.w	#MODEVAL_ARC,d0
 		bsr	lchmod
 		bmi	copy_directory_mode
 
-		moveq	#1,d0
-		bsr	tfopen
+		move.w	#1,-(a7)
+		move.l	a0,-(a7)
+		DOS	_OPEN
+		addq.l	#6,a7
 		move.l	d0,d1
 		bmi	copy_directory_mode
 
-		move.l	d3,-(a7)
+		move.l	copy_directory_filesbuf+ST_TIME(a6),d0
+		swap	d0
+		move.l	d0,-(a7)
 		move.w	d1,-(a7)
 		DOS	_FILEDATE			*  タイムスタンプを設定する
 		addq.l	#6,a7
 		move.w	d1,d0
 		bsr	fclose
 			* エラー処理省略 (無視)
-		bra	copy_directory_mode
-
-skip_copy_directory_date:
-		btst	#31,d5
-		beq	copy_directory_attributes_done
 copy_directory_mode:
 	*
 	*  属性をコピーする
 	*
 		lea	realdest_pathname(pc),a0
-		move.w	d2,d0
+		moveq	#0,d0
+		move.b	copy_directory_filesbuf+ST_MODE(a6),d0
+		bsr	newmode
 		bsr	lchmod				*  属性を設定する
 			* エラー処理省略 (無視)
 copy_directory_attributes_done:
@@ -815,14 +927,8 @@ copy_file:
 		beq	copy_file_x_ok
 
 		move.l	drive,d0
-		bpl	copy_file_compare_drive
-
-		cmp.l	#-1,d0
-		beq	copy_file_x_ok
-
-		bsr	get_drive
 		bmi	copy_file_x_ok
-copy_file_compare_drive:
+
 		cmp.w	d0,d3
 		bne	copy_file_done
 copy_file_x_ok:
@@ -977,7 +1083,7 @@ copy_file_not_identical:
 		cmp.l	d3,d0
 		bhs	copy_file_done
 update_ok:
-		bsr	confirm
+		bsr	confirm_overwrite
 		bne	copy_file_done
 
 		move.w	d2,d0
@@ -988,10 +1094,10 @@ update_ok:
 		bne	remove_and_create_dest_with_source_mode
 
 		move.l	realdest_mode,d3
-		bmi	create_dest_with_source_mode
+		bmi	create_dest_with_source_mode_ok
 
 		btst	#FLAG_p,d5
-		bne	create_dest_with_source_mode
+		bne	create_dest_with_source_mode_ok
 
 		and.w	#MODEVAL_EXE|MODEVAL_SYS|MODEVAL_HID|MODEVAL_RDO,d3
 		move.l	source_mode,d0
@@ -1024,7 +1130,12 @@ remove_and_create_dest_with_source_mode:
 		movea.l	(a7)+,a0
 		*  これが正しいと思う
 .endif
+		bra	create_dest_with_source_mode_ok
+
 create_dest_with_source_mode:
+		bsr	confirm_copy
+		bne	copy_file_done
+create_dest_with_source_mode_ok:
 		move.l	source_mode,d3
 		bpl	create_dest_1
 
@@ -1055,7 +1166,9 @@ create_dest_3:
 		btst	#FLAG_n,d5
 		bne	copy_file_done
 
-		move.w	d3,-(a7)
+		move.w	d3,d0
+		bsr	newmode
+		move.w	d0,-(a7)
 		move.l	a1,-(a7)			*  destinationを
 		DOS	_CREATE				*  作成する
 		addq.l	#6,a7				*  （ドライブの検査は済んでいる）
@@ -1152,17 +1265,30 @@ open_source:
 		tst.l	d0
 		rts
 *****************************************************************
-confirm:
-		move.l	a0,-(a7)
+confirm_overwrite:
+		movem.l	a0/a2,-(a7)
+		lea	msg_confirm_overwrite(pc),a2
+		btst	#FLAG_i,d5
+		bne	do_confirm
+		bra	confirm_I
+
+confirm_copy:
+		movem.l	a0/a2,-(a7)
+		lea	msg_confirm_copy(pc),a2
+confirm_I:
+		btst	#FLAG_I,d5
+		beq	confirm_yes
+do_confirm:
 		btst	#FLAG_n,d5
 		bne	confirm_yes
 
-		btst	#FLAG_i,d5
-		beq	confirm_yes
-
+		bsr	werror_myname
+		bsr	werror
+		lea	msg_wo(pc),a0
+		bsr	werror
 		movea.l	a1,a0
 		bsr	werror
-		lea	msg_confirm(pc),a0
+		movea.l	a2,a0
 		bsr	werror
 		lea	getsbuf(pc),a0
 		move.b	#GETSLEN,(a0)
@@ -1179,7 +1305,7 @@ confirm:
 confirm_yes:
 		moveq	#0,d0
 confirm_done:
-		movea.l	(a7)+,a0
+		movem.l	(a7)+,a0/a2
 		tst.l	d0
 		rts
 *****************************************************************
@@ -1203,7 +1329,41 @@ verbose_done:
 		rts
 *****************************************************************
 getdno:
+		movem.l	d1/a0-a1,-(a7)
+		bsr	getdno_sub
+		bpl	getdno_ok
+
+		lea	nameck_buffer(pc),a1
 		move.l	a1,-(a7)
+		move.l	a0,-(a7)
+		DOS	_NAMECK
+		addq.l	#8,a7
+		tst.l	d0
+		bmi	getdno_return
+
+		moveq	#-1,d0
+		tst.b	67(a1)
+		bne	getdno_return
+
+		movea.l	a1,a0
+		bsr	strip_excessive_slashes
+		bsr	getdno_sub
+		bpl	getdno_ok
+
+		tst.b	3(a0)
+		bne	getdno_return
+
+		moveq	#0,d1
+		move.b	(a0),d1
+		sub.w	#'A'-1,d1
+getdno_ok:
+		move.l	d1,d0
+getdno_return:
+		movem.l	(a7)+,d1/a0-a1
+		tst.l	d0
+		rts
+
+getdno_sub:
 		lea	fatchkbuf0(pc),a1
 		move.l	a1,d0
 		bset	#31,d0
@@ -1212,18 +1372,21 @@ getdno:
 		move.l	a0,-(a7)
 		DOS	_FATCHK
 		lea	10(a7),a7
+		cmp.l	#EBADPARAM,d0
+		bne	getdno_sub_ok
+
 		moveq	#0,d0
-		move.w	(a1),d0
-		movea.l	(a7)+,a1
+getdno_sub_ok:
+		moveq	#0,d1
+		move.w	(a1),d1
+		tst.l	d0
 		rts
 *****************************************************************
-get_drive:
-		bsr	lgetmode
-		bmi	get_drive_return
-
-		bsr	getdno
-		move.l	d0,drive
-get_drive_return:
+newmode:
+		bchg	#MODEBIT_RDO,d0
+		and.b	mode_mask,d0
+		or.b	mode_plus,d0
+		bchg	#MODEBIT_RDO,d0
 		rts
 *****************************************************************
 do_mkdir:
@@ -1460,11 +1623,15 @@ is_directory_return:
 		movem.l	(a7)+,a0-a2
 		rts
 *****************************************************************
-werror_myname_and_msg:
+werror_myname:
 		move.l	a0,-(a7)
 		lea	msg_myname(pc),a0
 		bsr	werror
 		movea.l	(a7)+,a0
+		rts
+
+werror_myname_and_msg:
+		bsr	werror_myname
 werror:
 		movem.l	d0/a1,-(a7)
 		movea.l	a0,a1
@@ -1526,7 +1693,7 @@ perror_2:
 .data
 
 	dc.b	0
-	dc.b	'## cp 1.2 ##  Copyright(C)1992 by Itagaki Fumihiko',0
+	dc.b	'## cp 1.4 ##  Copyright(C)1992-93 by Itagaki Fumihiko',0
 
 .even
 perror_table:
@@ -1574,6 +1741,7 @@ msg_colon:			dc.b	': ',0
 msg_dos_version_mismatch:	dc.b	'バージョン2.00以降のHuman68kが必要です',CR,LF,0
 msg_no_memory:			dc.b	'メモリが足りません',CR,LF,0
 msg_illegal_option:		dc.b	'不正なオプション -- ',0
+msg_bad_arg:			dc.b	'引数が正しくありません',0
 msg_too_few_args:		dc.b	'引数が足りません',0
 msg_too_long_pathname:		dc.b	'パス名が長過ぎます',0
 msg_not_a_directory:		dc.b	'ディレクトリではありません',0
@@ -1586,22 +1754,26 @@ msg_is_volumelabel:		dc.b	'ボリューム・ラベルです（コピーしません）',0
 msg_is_device:			dc.b	'キャラクタ・デバイスです（コピーしません）',0
 msg_dont_make_symbolic_link:	dc.b	'相対シンボリック・リンクは‘.’にのみ作成可能です',0
 msg_cannot_access_link:		dc.b	'lndrvが組み込まれていないためシンボリック・リンクの参照ファイルにアクセスできません',0
-msg_confirm:			dc.b	' に上書きしてよろしいですか？ ',0
+msg_confirm_overwrite:		dc.b	' に上書きしますか？ ',0
+msg_wo:				dc.b	' を ',0
+msg_confirm_copy:		dc.b	' にコピーしますか？ ',0
 msg_cannot_overwrite_dir:	dc.b	'ディレクトリやボリューム・ラベルには書き込めません',0
 msg_cannot_overwrite_symlink:	dc.b	'シンボリック・リンクには書き込めません',0
 msg_cannot_create_link:		dc.b	'シンボリック・リンクを作成できません: ファイルが存在しています',0
 msg_usage:			dc.b	CR,LF,CR,LF
-	dc.b	'使用法:  cp [-adfinpsuv] [-] f1 f2',CR,LF
+	dc.b	'使用法:  cp [-adfinpsuv] [-m <属性変更式>] [--] f1 f2',CR,LF
 	dc.b	'              f1: コピーするファイルまたは入力デバイス',CR,LF
 	dc.b	'              f2: 複製ファイル名または出力デバイス',CR,LF,CR,LF
 
-	dc.b	'         cp {-r|-R} [-adefinpsuvx] [-] d1 d2',CR,LF
+	dc.b	'         cp {-R|-r} [-Iadefinpsuvx] [-m <属性変更式>] [--] d1 d2',CR,LF
 	dc.b	'              d1: コピーするディレクトリ',CR,LF
 	dc.b	'              d2: 複製ディレクトリ名（新規）',CR,LF,CR,LF
 
-	dc.b	'         cp [-adefinprsuvxPR] [-] any ... targetdir',CR,LF
+	dc.b	'         cp [-IPRadefinprsuvx] [-m <属性変更式>] [--] any ... targetdir',CR,LF
 	dc.b	'              any: コピーするファイルやディレクトリ',CR,LF
-	dc.b	'              targetdir: コピー先ディレクトリ'
+	dc.b	'              targetdir: コピー先ディレクトリ',CR,LF,CR,LF
+
+	dc.b	'         属性変更式: {[ugoa]{{+-=}[ashrwx]}...}[,...]'
 msg_newline:		dc.b	CR,LF,0
 msg_arrow:		dc.b	' -> ',0
 msg_mkdir:		dc.b	'mkdir ',0
@@ -1612,7 +1784,7 @@ dos_wildcard_all:	dc.b	'*.*',0
 lndrv:			ds.l	1
 source_mode:		ds.l	1
 realdest_mode:		ds.l	1
-drive:			ds.w	1
+drive:			ds.l	1
 .even
 fatchkbuf0:		ds.b	14+8			* +8 : fatchkバグ対策
 .even
@@ -1626,15 +1798,15 @@ getsbuf:		ds.b	2+GETSLEN+1
 source_pathname:	ds.b	128
 realdest_pathname:	ds.b	128
 pathname_buf:		ds.b	128
+nameck_buffer:		ds.b	91
+mode_mask:		ds.b	1
+mode_plus:		ds.b	1
 .even
-			ds.b	4096+(copy_into_dir_autosize+4*12+copy_directory_autosize+4*3)*(MAXRECURSE+1)
-			*  必要なスタック量は，再帰の度に消費されるスタック量と
-			*  その回数とで決まる．
-			*  その他にマージンを含めたミニマム量として 4096バイトを確保しておく．
-			*  このプログラムでは 4096バイトあれば充分である．
-			*  （lndrv が 1.5KB程喰う可能性がある）
-			*  4*12 ... copy_into_dir でのセーブレジスタ D0-D3/D5/D7/A0-A3/A6/PC
-			*  4*3 ... copy_directory でのセーブレジスタ A0/A6/PC
+	ds.b	16384+(copy_into_dir_autosize+4*12+copy_directory_autosize+4*3)*(MAXRECURSE+1)
+	*  必要なスタック量は，再帰の度に消費されるスタック量とその回数とで決まる．
+	*  4*12 ... copy_into_dir でのセーブレジスタ D0-D3/D5/D7/A0-A3/A6/PC
+	*  4*3 ... copy_directory でのセーブレジスタ A0/A6/PC
+	*  この他にマージンとスーパーバイザ・スタックとを兼ねて16KB確保しておく．
 .even
 stack_bottom:
 *****************************************************************
